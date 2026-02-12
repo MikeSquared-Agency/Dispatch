@@ -22,6 +22,8 @@ const (
 type Task struct {
 	ID          uuid.UUID              `json:"id"`
 	Requester   string                 `json:"requester"`
+	Owner       string                 `json:"owner,omitempty"`
+	Submitter   string                 `json:"submitter,omitempty"`
 	Title       string                 `json:"title"`
 	Description string                 `json:"description,omitempty"`
 	Scope       string                 `json:"scope"`
@@ -46,6 +48,7 @@ type TaskFilter struct {
 	Requester string
 	Assignee  string
 	Scope     string
+	Owner     string
 	Limit     int
 	Offset    int
 }

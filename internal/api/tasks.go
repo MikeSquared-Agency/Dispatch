@@ -25,6 +25,7 @@ type CreateTaskRequest struct {
 	Title       string                 `json:"title"`
 	Description string                 `json:"description,omitempty"`
 	Scope       string                 `json:"scope"`
+	Owner       string                 `json:"owner,omitempty"`
 	Priority    int                    `json:"priority,omitempty"`
 	Context     map[string]interface{} `json:"context,omitempty"`
 	TimeoutMs   int                    `json:"timeout_ms,omitempty"`
@@ -43,8 +44,12 @@ func (h *TasksHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	submitter := r.Header.Get("X-Agent-ID")
+
 	task := &store.Task{
-		Requester:   r.Header.Get("X-Agent-ID"),
+		Requester:   submitter,
+		Owner:       req.Owner,
+		Submitter:   submitter,
 		Title:       req.Title,
 		Description: req.Description,
 		Scope:       req.Scope,
@@ -85,6 +90,7 @@ func (h *TasksHandler) List(w http.ResponseWriter, r *http.Request) {
 		Requester: r.URL.Query().Get("requester"),
 		Assignee:  r.URL.Query().Get("assignee"),
 		Scope:     r.URL.Query().Get("scope"),
+		Owner:     r.URL.Query().Get("owner"),
 	}
 	if s := r.URL.Query().Get("status"); s != "" {
 		status := store.TaskStatus(s)
@@ -263,7 +269,6 @@ func (h *TasksHandler) Progress(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// If still assigned, move to running
 	if task.Status == store.StatusAssigned {
 		now := time.Now()
 		task.Status = store.StatusRunning

@@ -30,15 +30,26 @@ func (s *PostgresStore) Close() error {
 	return nil
 }
 
+const taskColumns = `id, requester, owner, submitter, title, description, scope, priority, status, assignee,
+	result, error, context, timeout_ms, max_retries, retry_count, parent_id,
+	created_at, assigned_at, started_at, completed_at`
+
 func (s *PostgresStore) CreateTask(ctx context.Context, task *Task) error {
 	resultJSON, _ := json.Marshal(task.Result)
 	contextJSON, _ := json.Marshal(task.Context)
 
+	var ownerUUID *uuid.UUID
+	if task.Owner != "" {
+		if parsed, err := uuid.Parse(task.Owner); err == nil {
+			ownerUUID = &parsed
+		}
+	}
+
 	return s.pool.QueryRow(ctx, `
-		INSERT INTO dispatch_tasks (requester, title, description, scope, priority, status, context, timeout_ms, max_retries, parent_id, result)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		INSERT INTO dispatch_tasks (requester, owner, submitter, title, description, scope, priority, status, context, timeout_ms, max_retries, parent_id, result)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 		RETURNING id, created_at`,
-		task.Requester, task.Title, task.Description, task.Scope, task.Priority,
+		task.Requester, ownerUUID, task.Submitter, task.Title, task.Description, task.Scope, task.Priority,
 		task.Status, contextJSON, task.TimeoutMs, task.MaxRetries, task.ParentID, resultJSON,
 	).Scan(&task.ID, &task.CreatedAt)
 }
@@ -46,13 +57,12 @@ func (s *PostgresStore) CreateTask(ctx context.Context, task *Task) error {
 func (s *PostgresStore) GetTask(ctx context.Context, id uuid.UUID) (*Task, error) {
 	t := &Task{}
 	var resultJSON, contextJSON []byte
+	var ownerUUID *uuid.UUID
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, requester, title, description, scope, priority, status, assignee,
-		       result, error, context, timeout_ms, max_retries, retry_count, parent_id,
-		       created_at, assigned_at, started_at, completed_at
+		SELECT `+taskColumns+`
 		FROM dispatch_tasks WHERE id = $1`, id,
 	).Scan(
-		&t.ID, &t.Requester, &t.Title, &t.Description, &t.Scope, &t.Priority,
+		&t.ID, &t.Requester, &ownerUUID, &t.Submitter, &t.Title, &t.Description, &t.Scope, &t.Priority,
 		&t.Status, &t.Assignee, &resultJSON, &t.Error, &contextJSON,
 		&t.TimeoutMs, &t.MaxRetries, &t.RetryCount, &t.ParentID,
 		&t.CreatedAt, &t.AssignedAt, &t.StartedAt, &t.CompletedAt,
@@ -62,6 +72,9 @@ func (s *PostgresStore) GetTask(ctx context.Context, id uuid.UUID) (*Task, error
 	}
 	if err != nil {
 		return nil, err
+	}
+	if ownerUUID != nil {
+		t.Owner = ownerUUID.String()
 	}
 	if resultJSON != nil {
 		_ = json.Unmarshal(resultJSON, &t.Result)
@@ -73,10 +86,7 @@ func (s *PostgresStore) GetTask(ctx context.Context, id uuid.UUID) (*Task, error
 }
 
 func (s *PostgresStore) ListTasks(ctx context.Context, filter TaskFilter) ([]*Task, error) {
-	query := `SELECT id, requester, title, description, scope, priority, status, assignee,
-	                 result, error, context, timeout_ms, max_retries, retry_count, parent_id,
-	                 created_at, assigned_at, started_at, completed_at
-	          FROM dispatch_tasks WHERE 1=1`
+	query := `SELECT ` + taskColumns + ` FROM dispatch_tasks WHERE 1=1`
 	args := []interface{}{}
 	n := 0
 
@@ -99,6 +109,11 @@ func (s *PostgresStore) ListTasks(ctx context.Context, filter TaskFilter) ([]*Ta
 		n++
 		query += fmt.Sprintf(" AND scope = $%d", n)
 		args = append(args, filter.Scope)
+	}
+	if filter.Owner != "" {
+		n++
+		query += fmt.Sprintf(" AND owner = $%d", n)
+		args = append(args, filter.Owner)
 	}
 
 	query += " ORDER BY priority ASC, created_at ASC"
@@ -128,9 +143,7 @@ func (s *PostgresStore) ListTasks(ctx context.Context, filter TaskFilter) ([]*Ta
 
 func (s *PostgresStore) GetPendingTasks(ctx context.Context) ([]*Task, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, requester, title, description, scope, priority, status, assignee,
-		       result, error, context, timeout_ms, max_retries, retry_count, parent_id,
-		       created_at, assigned_at, started_at, completed_at
+		SELECT `+taskColumns+`
 		FROM dispatch_tasks WHERE status = 'pending'
 		ORDER BY priority ASC, created_at ASC`)
 	if err != nil {
@@ -142,9 +155,7 @@ func (s *PostgresStore) GetPendingTasks(ctx context.Context) ([]*Task, error) {
 
 func (s *PostgresStore) GetRunningTasksForAgent(ctx context.Context, agentID string) ([]*Task, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, requester, title, description, scope, priority, status, assignee,
-		       result, error, context, timeout_ms, max_retries, retry_count, parent_id,
-		       created_at, assigned_at, started_at, completed_at
+		SELECT `+taskColumns+`
 		FROM dispatch_tasks WHERE assignee = $1 AND status IN ('assigned', 'running')`, agentID)
 	if err != nil {
 		return nil, err
@@ -155,9 +166,7 @@ func (s *PostgresStore) GetRunningTasksForAgent(ctx context.Context, agentID str
 
 func (s *PostgresStore) GetRunningTasks(ctx context.Context) ([]*Task, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, requester, title, description, scope, priority, status, assignee,
-		       result, error, context, timeout_ms, max_retries, retry_count, parent_id,
-		       created_at, assigned_at, started_at, completed_at
+		SELECT `+taskColumns+`
 		FROM dispatch_tasks WHERE status IN ('assigned', 'running')`)
 	if err != nil {
 		return nil, err
@@ -170,14 +179,21 @@ func (s *PostgresStore) UpdateTask(ctx context.Context, task *Task) error {
 	resultJSON, _ := json.Marshal(task.Result)
 	contextJSON, _ := json.Marshal(task.Context)
 
+	var ownerUUID *uuid.UUID
+	if task.Owner != "" {
+		if parsed, err := uuid.Parse(task.Owner); err == nil {
+			ownerUUID = &parsed
+		}
+	}
+
 	_, err := s.pool.Exec(ctx, `
 		UPDATE dispatch_tasks SET
-			requester = $2, title = $3, description = $4, scope = $5, priority = $6,
-			status = $7, assignee = $8, result = $9, error = $10, context = $11,
-			timeout_ms = $12, max_retries = $13, retry_count = $14, parent_id = $15,
-			assigned_at = $16, started_at = $17, completed_at = $18
+			requester = $2, owner = $3, submitter = $4, title = $5, description = $6, scope = $7, priority = $8,
+			status = $9, assignee = $10, result = $11, error = $12, context = $13,
+			timeout_ms = $14, max_retries = $15, retry_count = $16, parent_id = $17,
+			assigned_at = $18, started_at = $19, completed_at = $20
 		WHERE id = $1`,
-		task.ID, task.Requester, task.Title, task.Description, task.Scope, task.Priority,
+		task.ID, task.Requester, ownerUUID, task.Submitter, task.Title, task.Description, task.Scope, task.Priority,
 		task.Status, task.Assignee, resultJSON, task.Error, contextJSON,
 		task.TimeoutMs, task.MaxRetries, task.RetryCount, task.ParentID,
 		task.AssignedAt, task.StartedAt, task.CompletedAt,
@@ -239,13 +255,17 @@ func scanTasks(rows pgx.Rows) ([]*Task, error) {
 	for rows.Next() {
 		t := &Task{}
 		var resultJSON, contextJSON []byte
+		var ownerUUID *uuid.UUID
 		if err := rows.Scan(
-			&t.ID, &t.Requester, &t.Title, &t.Description, &t.Scope, &t.Priority,
+			&t.ID, &t.Requester, &ownerUUID, &t.Submitter, &t.Title, &t.Description, &t.Scope, &t.Priority,
 			&t.Status, &t.Assignee, &resultJSON, &t.Error, &contextJSON,
 			&t.TimeoutMs, &t.MaxRetries, &t.RetryCount, &t.ParentID,
 			&t.CreatedAt, &t.AssignedAt, &t.StartedAt, &t.CompletedAt,
 		); err != nil {
 			return nil, err
+		}
+		if ownerUUID != nil {
+			t.Owner = ownerUUID.String()
 		}
 		if resultJSON != nil {
 			_ = json.Unmarshal(resultJSON, &t.Result)

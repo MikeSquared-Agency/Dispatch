@@ -4,6 +4,8 @@ import "time"
 
 type TaskRequestEvent struct {
 	Requester   string                 `json:"requester"`
+	Owner       string                 `json:"owner,omitempty"`
+	Submitter   string                 `json:"submitter,omitempty"`
 	Title       string                 `json:"title"`
 	Description string                 `json:"description,omitempty"`
 	Scope       string                 `json:"scope"`
@@ -36,10 +38,10 @@ type TaskTimeoutEvent struct {
 }
 
 type StatsEvent struct {
-	Pending   int     `json:"pending"`
-	Running   int     `json:"running"`
-	Completed int     `json:"completed"`
-	Failed    int     `json:"failed"`
-	AvgMs     float64 `json:"avg_completion_ms"`
+	Pending   int       `json:"pending"`
+	Running   int       `json:"running"`
+	Completed int       `json:"completed"`
+	Failed    int       `json:"failed"`
+	AvgMs     float64   `json:"avg_completion_ms"`
 	Timestamp time.Time `json:"timestamp"`
 }

@@ -1,6 +1,8 @@
 CREATE TABLE IF NOT EXISTS dispatch_tasks (
   id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   requester     TEXT NOT NULL,
+  owner         UUID,
+  submitter     TEXT,
   title         TEXT NOT NULL,
   description   TEXT,
   scope         TEXT NOT NULL,
@@ -26,6 +28,7 @@ CREATE INDEX IF NOT EXISTS idx_dispatch_tasks_assignee ON dispatch_tasks(assigne
 CREATE INDEX IF NOT EXISTS idx_dispatch_tasks_scope ON dispatch_tasks(scope);
 CREATE INDEX IF NOT EXISTS idx_dispatch_tasks_priority ON dispatch_tasks(priority);
 CREATE INDEX IF NOT EXISTS idx_dispatch_tasks_parent ON dispatch_tasks(parent_id);
+CREATE INDEX IF NOT EXISTS idx_dispatch_tasks_owner ON dispatch_tasks(owner);
 
 CREATE TABLE IF NOT EXISTS dispatch_task_events (
   id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),

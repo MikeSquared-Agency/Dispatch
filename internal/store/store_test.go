@@ -25,4 +25,20 @@ func TestTaskFilterDefaults(t *testing.T) {
 	if f.Status != nil {
 		t.Error("expected nil status filter")
 	}
+	if f.Owner != "" {
+		t.Error("expected empty owner filter")
+	}
+}
+
+func TestTaskFields(t *testing.T) {
+	task := Task{
+		Owner:     "550e8400-e29b-41d4-a716-446655440000",
+		Submitter: "main-agent",
+	}
+	if task.Owner == "" {
+		t.Error("expected owner to be set")
+	}
+	if task.Submitter == "" {
+		t.Error("expected submitter to be set")
+	}
 }

@@ -10,13 +10,14 @@ import (
 )
 
 type Config struct {
-	Server     ServerConfig     `yaml:"server"`
-	Database   DatabaseConfig   `yaml:"database"`
-	Hermes     HermesConfig     `yaml:"hermes"`
-	Warren     WarrenConfig     `yaml:"warren"`
-	PromptForge ForgeConfig    `yaml:"promptforge"`
-	Assignment AssignmentConfig `yaml:"assignment"`
-	Logging    LoggingConfig    `yaml:"logging"`
+	Server      ServerConfig     `yaml:"server"`
+	Database    DatabaseConfig   `yaml:"database"`
+	Hermes      HermesConfig     `yaml:"hermes"`
+	Warren      WarrenConfig     `yaml:"warren"`
+	PromptForge ForgeConfig      `yaml:"promptforge"`
+	Alexandria  AlexandriaConfig `yaml:"alexandria"`
+	Assignment  AssignmentConfig `yaml:"assignment"`
+	Logging     LoggingConfig    `yaml:"logging"`
 }
 
 type ServerConfig struct {
@@ -42,10 +43,14 @@ type ForgeConfig struct {
 	URL string `yaml:"url"`
 }
 
+type AlexandriaConfig struct {
+	URL string `yaml:"url"`
+}
+
 type AssignmentConfig struct {
-	TickIntervalMs       int `yaml:"tick_interval_ms"`
-	WakeTimeoutMs        int `yaml:"wake_timeout_ms"`
-	DefaultTimeoutMs     int `yaml:"default_timeout_ms"`
+	TickIntervalMs        int `yaml:"tick_interval_ms"`
+	WakeTimeoutMs         int `yaml:"wake_timeout_ms"`
+	DefaultTimeoutMs      int `yaml:"default_timeout_ms"`
 	MaxConcurrentPerAgent int `yaml:"max_concurrent_per_agent"`
 }
 
@@ -80,6 +85,9 @@ func Load(path string) (*Config, error) {
 		},
 		PromptForge: ForgeConfig{
 			URL: "http://localhost:8083",
+		},
+		Alexandria: AlexandriaConfig{
+			URL: "http://localhost:8500",
 		},
 		Assignment: AssignmentConfig{
 			TickIntervalMs:        5000,
@@ -135,6 +143,9 @@ func applyEnv(cfg *Config) {
 	}
 	if v := os.Getenv("DISPATCH_FORGE_URL"); v != "" {
 		cfg.PromptForge.URL = v
+	}
+	if v := os.Getenv("DISPATCH_ALEXANDRIA_URL"); v != "" {
+		cfg.Alexandria.URL = v
 	}
 	if v := os.Getenv("DISPATCH_TICK_INTERVAL_MS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {

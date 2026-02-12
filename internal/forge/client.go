@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -24,12 +25,18 @@ type Client interface {
 type HTTPClient struct {
 	baseURL    string
 	httpClient *http.Client
+
+	mu        sync.RWMutex
+	cache     []Persona
+	cacheTime time.Time
+	cacheTTL  time.Duration
 }
 
 func NewHTTPClient(baseURL string) *HTTPClient {
 	return &HTTPClient{
 		baseURL:    baseURL,
 		httpClient: &http.Client{Timeout: 10 * time.Second},
+		cacheTTL:   60 * time.Second,
 	}
 }
 
@@ -43,7 +50,30 @@ type personaResponse struct {
 }
 
 func (c *HTTPClient) ListPersonas(ctx context.Context) ([]Persona, error) {
-	req, err := http.NewRequestWithContext(ctx, "GET", c.baseURL+"/api/v1/personas", nil)
+	c.mu.RLock()
+	if c.cache != nil && time.Since(c.cacheTime) < c.cacheTTL {
+		cached := make([]Persona, len(c.cache))
+		copy(cached, c.cache)
+		c.mu.RUnlock()
+		return cached, nil
+	}
+	c.mu.RUnlock()
+
+	personas, err := c.fetchPersonas(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	c.mu.Lock()
+	c.cache = personas
+	c.cacheTime = time.Now()
+	c.mu.Unlock()
+
+	return personas, nil
+}
+
+func (c *HTTPClient) fetchPersonas(ctx context.Context) ([]Persona, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", c.baseURL+"/api/v1/prompts", nil)
 	if err != nil {
 		return nil, err
 	}

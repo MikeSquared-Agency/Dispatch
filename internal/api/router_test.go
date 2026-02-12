@@ -20,7 +20,7 @@ import (
 	"github.com/DarlingtonDeveloper/Dispatch/internal/warren"
 )
 
-// Mocks (same pattern as broker tests)
+// Mocks
 type mockStore struct {
 	tasks  map[uuid.UUID]*store.Task
 	events []*store.TaskEvent
@@ -30,48 +30,67 @@ func newMockStore() *mockStore {
 	return &mockStore{tasks: make(map[uuid.UUID]*store.Task)}
 }
 func (m *mockStore) CreateTask(_ context.Context, t *store.Task) error {
-	t.ID = uuid.New(); t.CreatedAt = time.Now(); m.tasks[t.ID] = t; return nil
+	t.ID = uuid.New()
+	t.CreatedAt = time.Now()
+	m.tasks[t.ID] = t
+	return nil
 }
-func (m *mockStore) GetTask(_ context.Context, id uuid.UUID) (*store.Task, error) { return m.tasks[id], nil }
+func (m *mockStore) GetTask(_ context.Context, id uuid.UUID) (*store.Task, error) {
+	return m.tasks[id], nil
+}
 func (m *mockStore) ListTasks(_ context.Context, _ store.TaskFilter) ([]*store.Task, error) {
-	var out []*store.Task; for _, t := range m.tasks { out = append(out, t) }; return out, nil
+	var out []*store.Task
+	for _, t := range m.tasks {
+		out = append(out, t)
+	}
+	return out, nil
 }
-func (m *mockStore) UpdateTask(_ context.Context, t *store.Task) error { m.tasks[t.ID] = t; return nil }
-func (m *mockStore) GetPendingTasks(_ context.Context) ([]*store.Task, error) { return nil, nil }
-func (m *mockStore) GetRunningTasksForAgent(_ context.Context, _ string) ([]*store.Task, error) { return nil, nil }
-func (m *mockStore) GetRunningTasks(_ context.Context) ([]*store.Task, error) { return nil, nil }
+func (m *mockStore) UpdateTask(_ context.Context, t *store.Task) error {
+	m.tasks[t.ID] = t
+	return nil
+}
+func (m *mockStore) GetPendingTasks(_ context.Context) ([]*store.Task, error)                    { return nil, nil }
+func (m *mockStore) GetRunningTasksForAgent(_ context.Context, _ string) ([]*store.Task, error)  { return nil, nil }
+func (m *mockStore) GetRunningTasks(_ context.Context) ([]*store.Task, error)                    { return nil, nil }
 func (m *mockStore) CreateTaskEvent(_ context.Context, e *store.TaskEvent) error {
-	e.ID = uuid.New(); m.events = append(m.events, e); return nil
+	e.ID = uuid.New()
+	m.events = append(m.events, e)
+	return nil
 }
-func (m *mockStore) GetTaskEvents(_ context.Context, _ uuid.UUID) ([]*store.TaskEvent, error) { return nil, nil }
+func (m *mockStore) GetTaskEvents(_ context.Context, _ uuid.UUID) ([]*store.TaskEvent, error) {
+	return nil, nil
+}
 func (m *mockStore) GetStats(_ context.Context) (*store.TaskStats, error) {
 	return &store.TaskStats{TotalPending: 1}, nil
 }
 func (m *mockStore) Close() error { return nil }
 
 type mockHermes struct{}
-func (m *mockHermes) Publish(_ string, _ interface{}) error { return nil }
+
+func (m *mockHermes) Publish(_ string, _ interface{}) error            { return nil }
 func (m *mockHermes) Subscribe(_ string, _ func(string, []byte)) error { return nil }
-func (m *mockHermes) Close() {}
+func (m *mockHermes) Close()                                           {}
 
 type mockWarren struct{}
+
 func (m *mockWarren) GetAgentState(_ context.Context, id string) (*warren.AgentState, error) {
-	return &warren.AgentState{Name: id, Status: "ready"}, nil
+	return &warren.AgentState{Name: id, Status: "ready", Policy: "always-on"}, nil
 }
 func (m *mockWarren) WakeAgent(_ context.Context, _ string) error { return nil }
 func (m *mockWarren) ListAgents(_ context.Context) ([]warren.AgentState, error) {
-	return []warren.AgentState{{Name: "test", Status: "ready"}}, nil
+	return []warren.AgentState{{Name: "test", Status: "ready", Policy: "always-on"}}, nil
 }
 
 type mockForge struct{}
-func (m *mockForge) ListPersonas(_ context.Context) ([]forge.Persona, error) { return nil, nil }
+
+func (m *mockForge) ListPersonas(_ context.Context) ([]forge.Persona, error)                       { return nil, nil }
 func (m *mockForge) GetAgentsByCapability(_ context.Context, _ string) ([]forge.Persona, error) { return nil, nil }
 
 func setupTestRouter() (http.Handler, *mockStore) {
 	ms := newMockStore()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	cfg := &config.Config{Assignment: config.AssignmentConfig{TickIntervalMs: 100, MaxConcurrentPerAgent: 3}}
-	b := broker.New(ms, &mockHermes{}, &mockWarren{}, &mockForge{}, cfg, logger)
+	b := broker.New(ms, &mockHermes{}, &mockWarren{}, &mockForge{}, nil, cfg, logger)
 	router := NewRouter(ms, &mockHermes{}, &mockWarren{}, &mockForge{}, b, "test-token", logger)
 	return router, ms
 }
@@ -79,7 +98,7 @@ func setupTestRouter() (http.Handler, *mockStore) {
 func TestCreateTask(t *testing.T) {
 	router, _ := setupTestRouter()
 
-	body := `{"title":"Test Task","scope":"research","priority":2}`
+	body := `{"title":"Test Task","scope":"research","priority":2,"owner":"550e8400-e29b-41d4-a716-446655440000"}`
 	req := httptest.NewRequest("POST", "/api/v1/tasks", bytes.NewBufferString(body))
 	req.Header.Set("X-Agent-ID", "test-agent")
 	req.Header.Set("Content-Type", "application/json")
@@ -98,6 +117,12 @@ func TestCreateTask(t *testing.T) {
 	}
 	if task.Priority != 2 {
 		t.Errorf("expected priority 2, got %d", task.Priority)
+	}
+	if task.Owner != "550e8400-e29b-41d4-a716-446655440000" {
+		t.Errorf("expected owner UUID, got '%s'", task.Owner)
+	}
+	if task.Submitter != "test-agent" {
+		t.Errorf("expected submitter 'test-agent', got '%s'", task.Submitter)
 	}
 }
 
@@ -185,7 +210,6 @@ func TestStatsWithToken(t *testing.T) {
 func TestCompleteTask(t *testing.T) {
 	router, ms := setupTestRouter()
 
-	// Create a task first
 	task := &store.Task{
 		Requester: "test", Title: "Complete Me", Scope: "code",
 		Priority: 3, Status: store.StatusRunning, TimeoutMs: 300000,

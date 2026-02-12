@@ -12,6 +12,7 @@ import (
 type AgentState struct {
 	Name   string `json:"name"`
 	Status string `json:"status"` // ready, sleeping, busy, degraded, stopped
+	Policy string `json:"policy"` // always-on, on-demand
 }
 
 type Client interface {

@@ -1,15 +1,16 @@
 package broker
 
 import (
-	"io"
-	"math"
-	"log/slog"
 	"context"
+	"io"
+	"log/slog"
+	"math"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 
+	"github.com/DarlingtonDeveloper/Dispatch/internal/alexandria"
 	"github.com/DarlingtonDeveloper/Dispatch/internal/config"
 	"github.com/DarlingtonDeveloper/Dispatch/internal/forge"
 	"github.com/DarlingtonDeveloper/Dispatch/internal/store"
@@ -95,15 +96,21 @@ func (m *mockStore) GetStats(_ context.Context) (*store.TaskStats, error) {
 func (m *mockStore) Close() error { return nil }
 
 type mockHermes struct {
-	published []struct{ subject string; data interface{} }
+	published []struct {
+		subject string
+		data    interface{}
+	}
 }
 
 func (m *mockHermes) Publish(subject string, data interface{}) error {
-	m.published = append(m.published, struct{ subject string; data interface{} }{subject, data})
+	m.published = append(m.published, struct {
+		subject string
+		data    interface{}
+	}{subject, data})
 	return nil
 }
 func (m *mockHermes) Subscribe(_ string, _ func(string, []byte)) error { return nil }
-func (m *mockHermes) Close() {}
+func (m *mockHermes) Close()                                           {}
 
 type mockWarren struct {
 	states map[string]*warren.AgentState
@@ -144,6 +151,23 @@ func (m *mockForge) GetAgentsByCapability(_ context.Context, scope string) ([]fo
 	return out, nil
 }
 
+type mockAlexandria struct {
+	devices []alexandria.Device
+}
+
+func (m *mockAlexandria) ListDevices(_ context.Context) ([]alexandria.Device, error) {
+	return m.devices, nil
+}
+func (m *mockAlexandria) GetDevicesByOwner(_ context.Context, ownerID string) ([]alexandria.Device, error) {
+	var out []alexandria.Device
+	for _, d := range m.devices {
+		if d.OwnerID == ownerID {
+			out = append(out, d)
+		}
+	}
+	return out, nil
+}
+
 func testConfig() *config.Config {
 	return &config.Config{
 		Assignment: config.AssignmentConfig{
@@ -175,18 +199,41 @@ func TestScoreCandidate(t *testing.T) {
 	tests := []struct {
 		name   string
 		status string
+		policy string
 		want   float64
 	}{
-		{"ready agent", "ready", 1.0 * 1.0 * 1.4},
-		{"sleeping agent", "sleeping", 1.0 * 0.8 * 1.4},
-		{"busy agent", "busy", 1.0 * 0.5 * 1.4},
-		{"degraded agent", "degraded", 0},
+		{"always-on ready", "ready", "always-on", 1.0 * 1.0 * 1.0 * 1.4},
+		{"on-demand ready", "ready", "on-demand", 1.0 * 1.0 * 0.9 * 1.4},
+		{"on-demand sleeping", "sleeping", "on-demand", 1.0 * 0.8 * 0.6 * 1.4},
+		{"degraded agent", "degraded", "always-on", 0},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			state := &warren.AgentState{Name: "lily", Status: tt.status}
+			state := &warren.AgentState{Name: "lily", Status: tt.status, Policy: tt.policy}
 			got := ScoreCandidate(p, state, task, s, ctx, 3)
+			if math.Abs(got-tt.want) > 0.001 {
+				t.Errorf("got %f, want %f", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPolicyMultiplier(t *testing.T) {
+	tests := []struct {
+		name   string
+		state  *warren.AgentState
+		want   float64
+	}{
+		{"always-on ready", &warren.AgentState{Policy: "always-on", Status: "ready"}, 1.0},
+		{"on-demand ready", &warren.AgentState{Policy: "on-demand", Status: "ready"}, 0.9},
+		{"on-demand sleeping", &warren.AgentState{Policy: "on-demand", Status: "sleeping"}, 0.6},
+		{"on-demand busy", &warren.AgentState{Policy: "on-demand", Status: "busy"}, 0.9},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := PolicyMultiplier(tt.state)
 			if math.Abs(got-tt.want) > 0.001 {
 				t.Errorf("got %f, want %f", got, tt.want)
 			}
@@ -198,8 +245,8 @@ func TestBrokerAssignment(t *testing.T) {
 	ms := newMockStore()
 	mh := &mockHermes{}
 	mw := &mockWarren{states: map[string]*warren.AgentState{
-		"lily": {Name: "lily", Status: "ready"},
-		"nova": {Name: "nova", Status: "sleeping"},
+		"lily": {Name: "lily", Status: "ready", Policy: "always-on"},
+		"nova": {Name: "nova", Status: "sleeping", Policy: "on-demand"},
 	}}
 	mf := &mockForge{personas: []forge.Persona{
 		{Name: "lily", Capabilities: []string{"research", "analysis"}},
@@ -207,10 +254,7 @@ func TestBrokerAssignment(t *testing.T) {
 	}}
 
 	cfg := testConfig()
-	b := New(ms, mh, mw, mf, cfg, nil)
-
-	// Suppress logger
-	b.logger = discardLogger()
+	b := New(ms, mh, mw, mf, nil, cfg, discardLogger())
 
 	ctx := context.Background()
 	task := &store.Task{
@@ -230,12 +274,105 @@ func TestBrokerAssignment(t *testing.T) {
 		t.Errorf("expected assigned, got %s", updated.Status)
 	}
 	if updated.Assignee != "lily" {
-		t.Errorf("expected lily (ready), got %s", updated.Assignee)
+		t.Errorf("expected lily (ready+always-on), got %s", updated.Assignee)
+	}
+}
+
+func TestOwnerScopedFiltering(t *testing.T) {
+	ms := newMockStore()
+	mh := &mockHermes{}
+	ownerID := uuid.New().String()
+	mw := &mockWarren{states: map[string]*warren.AgentState{
+		"lily": {Name: "lily", Status: "ready", Policy: "always-on"},
+		"nova": {Name: "nova", Status: "ready", Policy: "always-on"},
+	}}
+	mf := &mockForge{personas: []forge.Persona{
+		{Name: "lily", Capabilities: []string{"research"}},
+		{Name: "nova", Capabilities: []string{"research"}},
+	}}
+	ma := &mockAlexandria{devices: []alexandria.Device{
+		{ID: "d1", Name: "nova", OwnerID: ownerID},
+	}}
+
+	cfg := testConfig()
+	b := New(ms, mh, mw, mf, ma, cfg, discardLogger())
+
+	ctx := context.Background()
+	task := &store.Task{
+		Requester: "main",
+		Owner:     ownerID,
+		Submitter: "main",
+		Title:     "owner-scoped task",
+		Scope:     "research",
+		Priority:  3,
+		Status:    store.StatusPending,
+		TimeoutMs: 5000,
+	}
+	_ = ms.CreateTask(ctx, task)
+
+	b.processPendingTasks(ctx)
+
+	updated := ms.tasks[task.ID]
+	if updated.Status != store.StatusAssigned {
+		t.Errorf("expected assigned, got %s", updated.Status)
+	}
+	// Should be nova (only agent owned by this owner)
+	if updated.Assignee != "nova" {
+		t.Errorf("expected nova (owner-scoped), got %s", updated.Assignee)
+	}
+}
+
+func TestOwnerScopedUnmatched(t *testing.T) {
+	ms := newMockStore()
+	mh := &mockHermes{}
+	ownerID := uuid.New().String()
+	mw := &mockWarren{states: map[string]*warren.AgentState{
+		"lily": {Name: "lily", Status: "ready", Policy: "always-on"},
+	}}
+	mf := &mockForge{personas: []forge.Persona{
+		{Name: "lily", Capabilities: []string{"research"}},
+	}}
+	// No devices owned by ownerID
+	ma := &mockAlexandria{devices: []alexandria.Device{
+		{ID: "d1", Name: "lily", OwnerID: "different-owner"},
+	}}
+
+	cfg := testConfig()
+	b := New(ms, mh, mw, mf, ma, cfg, discardLogger())
+
+	ctx := context.Background()
+	task := &store.Task{
+		Requester: "main",
+		Owner:     ownerID,
+		Title:     "unmatched task",
+		Scope:     "research",
+		Priority:  3,
+		Status:    store.StatusPending,
+		TimeoutMs: 5000,
+	}
+	_ = ms.CreateTask(ctx, task)
+
+	b.processPendingTasks(ctx)
+
+	updated := ms.tasks[task.ID]
+	if updated.Status != store.StatusPending {
+		t.Errorf("expected pending (unmatched), got %s", updated.Status)
+	}
+
+	// Should have published unmatched event
+	found := false
+	for _, p := range mh.published {
+		if p.subject == "swarm.task."+task.ID.String()+".unmatched" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected unmatched event to be published")
 	}
 }
 
 func TestBrokerDrain(t *testing.T) {
-	b := New(nil, nil, nil, nil, testConfig(), discardLogger())
+	b := New(nil, nil, nil, nil, nil, testConfig(), discardLogger())
 	b.DrainAgent("lily")
 	if !b.IsDrained("lily") {
 		t.Error("expected lily to be drained")
@@ -250,7 +387,7 @@ func TestTimeoutRetry(t *testing.T) {
 	ms := newMockStore()
 	mh := &mockHermes{}
 	cfg := testConfig()
-	b := New(ms, mh, nil, nil, cfg, discardLogger())
+	b := New(ms, mh, nil, nil, nil, cfg, discardLogger())
 
 	ctx := context.Background()
 	past := time.Now().Add(-10 * time.Second)
@@ -284,7 +421,7 @@ func TestTimeoutExhausted(t *testing.T) {
 	ms := newMockStore()
 	mh := &mockHermes{}
 	cfg := testConfig()
-	b := New(ms, mh, nil, nil, cfg, discardLogger())
+	b := New(ms, mh, nil, nil, nil, cfg, discardLogger())
 
 	ctx := context.Background()
 	past := time.Now().Add(-10 * time.Second)
@@ -314,7 +451,7 @@ func TestTimeoutExhausted(t *testing.T) {
 func TestHandleAgentStopped(t *testing.T) {
 	ms := newMockStore()
 	cfg := testConfig()
-	b := New(ms, &mockHermes{}, nil, nil, cfg, discardLogger())
+	b := New(ms, &mockHermes{}, nil, nil, nil, cfg, discardLogger())
 
 	ctx := context.Background()
 	now := time.Now()

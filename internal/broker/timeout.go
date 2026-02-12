@@ -51,7 +51,7 @@ func (b *Broker) checkTimeouts(ctx context.Context) {
 		b.logger.Warn("task timed out", "task_id", task.ID, "assignee", task.Assignee)
 
 		if task.RetryCount < task.MaxRetries {
-			// Retry
+			// Retry — reset to pending for re-assignment
 			task.RetryCount++
 			task.Status = store.StatusPending
 			task.Assignee = ""
@@ -65,11 +65,13 @@ func (b *Broker) checkTimeouts(ctx context.Context) {
 				TaskID: task.ID,
 				Event:  "timeout_retry",
 			})
-			_ = b.hermes.Publish(hermes.SubjectTaskTimeout(task.ID.String()), hermes.TaskTimeoutEvent{
-				TaskID:     task.ID.String(),
-				RetryCount: task.RetryCount,
-				MaxRetries: task.MaxRetries,
-			})
+			if b.hermes != nil {
+				_ = b.hermes.Publish(hermes.SubjectTaskTimeout(task.ID.String()), hermes.TaskTimeoutEvent{
+					TaskID:     task.ID.String(),
+					RetryCount: task.RetryCount,
+					MaxRetries: task.MaxRetries,
+				})
+			}
 		} else {
 			// Exhausted
 			completedAt := now
@@ -84,10 +86,13 @@ func (b *Broker) checkTimeouts(ctx context.Context) {
 				TaskID: task.ID,
 				Event:  "timeout_exhausted",
 			})
-			_ = b.hermes.Publish(hermes.SubjectTaskFailed(task.ID.String()), hermes.TaskFailedEvent{
-				TaskID: task.ID.String(),
-				Error:  "timeout exhausted",
-			})
+			if b.hermes != nil {
+				_ = b.hermes.Publish(hermes.SubjectTaskTimeout(task.ID.String()), hermes.TaskTimeoutEvent{
+					TaskID:     task.ID.String(),
+					RetryCount: task.RetryCount,
+					MaxRetries: task.MaxRetries,
+				})
+			}
 		}
 	}
 }

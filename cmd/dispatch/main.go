@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/DarlingtonDeveloper/Dispatch/internal/alexandria"
 	"github.com/DarlingtonDeveloper/Dispatch/internal/api"
 	"github.com/DarlingtonDeveloper/Dispatch/internal/broker"
 	"github.com/DarlingtonDeveloper/Dispatch/internal/config"
@@ -64,16 +65,17 @@ func main() {
 	// PromptForge
 	forgeClient := forge.NewHTTPClient(cfg.PromptForge.URL)
 
+	// Alexandria
+	alexandriaClient := alexandria.NewHTTPClient(cfg.Alexandria.URL)
+
 	// Broker
-	b := broker.New(db, hermesClient, warrenClient, forgeClient, cfg, logger)
+	b := broker.New(db, hermesClient, warrenClient, forgeClient, alexandriaClient, cfg, logger)
 	b.Start(ctx)
 	defer b.Stop()
 	logger.Info("broker started", "tick_interval", cfg.TickInterval())
 
-	// Subscribe to Hermes events
-	if hermesClient != nil {
-		setupSubscriptions(ctx, hermesClient, b, db, logger)
-	}
+	// Subscribe to NATS events for bookkeeping
+	b.SetupSubscriptions()
 
 	// API server
 	router := api.NewRouter(db, hermesClient, warrenClient, forgeClient, b, cfg.Server.AdminToken, logger)
@@ -119,32 +121,4 @@ func main() {
 	b.Stop()
 
 	logger.Info("shutdown complete")
-}
-
-func setupSubscriptions(_ context.Context, h hermes.Client, b *broker.Broker, _ store.Store, logger *slog.Logger) {
-	// Listen for agent stopped events to reassign tasks
-	if err := h.Subscribe(hermes.SubjectAgentStopped, func(subject string, data []byte) {
-		// Extract agent name from subject: swarm.agent.{name}.stopped
-		parts := splitSubject(subject)
-		if len(parts) >= 3 {
-			agentID := parts[2]
-			logger.Info("agent stopped, reassigning tasks", "agent", agentID)
-			b.HandleAgentStopped(context.Background(), agentID)
-		}
-	}); err != nil {
-		logger.Warn("failed to subscribe to agent stopped", "error", err)
-	}
-}
-
-func splitSubject(subject string) []string {
-	var parts []string
-	start := 0
-	for i := 0; i < len(subject); i++ {
-		if subject[i] == '.' {
-			parts = append(parts, subject[start:i])
-			start = i + 1
-		}
-	}
-	parts = append(parts, subject[start:])
-	return parts
 }
