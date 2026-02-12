@@ -13,6 +13,7 @@ import (
 	"github.com/DarlingtonDeveloper/Dispatch/internal/alexandria"
 	"github.com/DarlingtonDeveloper/Dispatch/internal/config"
 	"github.com/DarlingtonDeveloper/Dispatch/internal/forge"
+	"github.com/DarlingtonDeveloper/Dispatch/internal/hermes"
 	"github.com/DarlingtonDeveloper/Dispatch/internal/store"
 	"github.com/DarlingtonDeveloper/Dispatch/internal/warren"
 )
@@ -494,6 +495,479 @@ func TestHandleAgentStopped(t *testing.T) {
 	}
 	if updated.AssignedAgent != "" {
 		t.Errorf("expected empty assigned_agent, got %s", updated.AssignedAgent)
+	}
+}
+
+// --- State machine transition tests ---
+
+func TestHandleStartedTransition(t *testing.T) {
+	ms := newMockStore()
+	mh := &mockHermes{}
+	b := New(ms, mh, nil, nil, nil, testConfig(), discardLogger())
+
+	ctx := context.Background()
+	now := time.Now()
+	task := &store.Task{
+		Owner:                "system",
+		Title:                "started test",
+		RequiredCapabilities: []string{"research"},
+		Status:               store.StatusAssigned,
+		AssignedAgent:        "scout",
+		AssignedAt:           &now,
+		Source:               "manual",
+		RetryEligible:        true,
+	}
+	_ = ms.CreateTask(ctx, task)
+
+	b.handleStarted(map[string]interface{}{
+		"task_id": task.ID.String(),
+		"agent":   "scout",
+	})
+
+	updated := ms.tasks[task.ID]
+	if updated.Status != store.StatusInProgress {
+		t.Errorf("expected in_progress, got %s", updated.Status)
+	}
+	if updated.StartedAt == nil {
+		t.Error("expected started_at to be set")
+	}
+	// Verify event was recorded
+	found := false
+	for _, e := range ms.events {
+		if e.TaskID == task.ID && e.Event == "started" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected 'started' event to be recorded")
+	}
+}
+
+func TestHandleStartedIgnoresNonAssigned(t *testing.T) {
+	ms := newMockStore()
+	b := New(ms, &mockHermes{}, nil, nil, nil, testConfig(), discardLogger())
+
+	ctx := context.Background()
+	now := time.Now()
+	task := &store.Task{
+		Owner:         "system",
+		Title:         "already running",
+		Status:        store.StatusInProgress,
+		AssignedAgent: "scout",
+		AssignedAt:    &now,
+		StartedAt:     &now,
+		Source:        "manual",
+	}
+	_ = ms.CreateTask(ctx, task)
+
+	b.handleStarted(map[string]interface{}{
+		"task_id": task.ID.String(),
+		"agent":   "scout",
+	})
+
+	updated := ms.tasks[task.ID]
+	if updated.Status != store.StatusInProgress {
+		t.Errorf("expected status unchanged at in_progress, got %s", updated.Status)
+	}
+}
+
+func TestHandleFailedWithRetry(t *testing.T) {
+	ms := newMockStore()
+	mh := &mockHermes{}
+	b := New(ms, mh, nil, nil, nil, testConfig(), discardLogger())
+
+	ctx := context.Background()
+	now := time.Now()
+	task := &store.Task{
+		Owner:                "system",
+		Title:                "retry me",
+		RequiredCapabilities: []string{"research"},
+		Status:               store.StatusInProgress,
+		AssignedAgent:        "scout",
+		AssignedAt:           &now,
+		StartedAt:            &now,
+		MaxRetries:           3,
+		RetryCount:           0,
+		RetryEligible:        true,
+		Source:               "manual",
+	}
+	_ = ms.CreateTask(ctx, task)
+
+	b.handleFailed(hermes.TaskFailedEvent{
+		TaskID:        task.ID.String(),
+		Error:         "transient error",
+		RetryEligible: true,
+	})
+
+	updated := ms.tasks[task.ID]
+	if updated.Status != store.StatusPending {
+		t.Errorf("expected pending (retried), got %s", updated.Status)
+	}
+	if updated.RetryCount != 1 {
+		t.Errorf("expected retry_count 1, got %d", updated.RetryCount)
+	}
+	if updated.AssignedAgent != "" {
+		t.Errorf("expected assigned_agent cleared, got %s", updated.AssignedAgent)
+	}
+	if updated.AssignedAt != nil {
+		t.Error("expected assigned_at cleared")
+	}
+
+	// Verify retry event published
+	retryFound := false
+	for _, p := range mh.published {
+		if p.subject == "swarm.task."+task.ID.String()+".retry" {
+			retryFound = true
+		}
+	}
+	if !retryFound {
+		t.Error("expected retry event to be published")
+	}
+}
+
+func TestHandleFailedNotRetryEligible(t *testing.T) {
+	ms := newMockStore()
+	mh := &mockHermes{}
+	b := New(ms, mh, nil, nil, nil, testConfig(), discardLogger())
+
+	ctx := context.Background()
+	now := time.Now()
+	task := &store.Task{
+		Owner:                "system",
+		Title:                "permanent failure",
+		RequiredCapabilities: []string{"research"},
+		Status:               store.StatusInProgress,
+		AssignedAgent:        "scout",
+		AssignedAt:           &now,
+		StartedAt:            &now,
+		MaxRetries:           3,
+		RetryCount:           0,
+		RetryEligible:        true,
+		Source:               "manual",
+	}
+	_ = ms.CreateTask(ctx, task)
+
+	b.handleFailed(hermes.TaskFailedEvent{
+		TaskID:        task.ID.String(),
+		Error:         "invalid input — permanent",
+		RetryEligible: false,
+	})
+
+	updated := ms.tasks[task.ID]
+	if updated.Status != store.StatusFailed {
+		t.Errorf("expected failed (DLQ), got %s", updated.Status)
+	}
+	if updated.CompletedAt == nil {
+		t.Error("expected completed_at set on DLQ")
+	}
+
+	// Verify DLQ event published
+	dlqFound := false
+	for _, p := range mh.published {
+		if p.subject == "swarm.task."+task.ID.String()+".dlq" {
+			dlqFound = true
+		}
+	}
+	if !dlqFound {
+		t.Error("expected DLQ event to be published")
+	}
+}
+
+func TestHandleFailedRetriesExhausted(t *testing.T) {
+	ms := newMockStore()
+	mh := &mockHermes{}
+	b := New(ms, mh, nil, nil, nil, testConfig(), discardLogger())
+
+	ctx := context.Background()
+	now := time.Now()
+	task := &store.Task{
+		Owner:                "system",
+		Title:                "all retries used",
+		RequiredCapabilities: []string{"research"},
+		Status:               store.StatusInProgress,
+		AssignedAgent:        "scout",
+		AssignedAt:           &now,
+		StartedAt:            &now,
+		MaxRetries:           2,
+		RetryCount:           2,
+		RetryEligible:        true,
+		Source:               "manual",
+	}
+	_ = ms.CreateTask(ctx, task)
+
+	b.handleFailed(hermes.TaskFailedEvent{
+		TaskID:        task.ID.String(),
+		Error:         "failed again",
+		RetryEligible: true,
+	})
+
+	updated := ms.tasks[task.ID]
+	if updated.Status != store.StatusFailed {
+		t.Errorf("expected failed (exhausted), got %s", updated.Status)
+	}
+
+	dlqFound := false
+	for _, p := range mh.published {
+		if p.subject == "swarm.task."+task.ID.String()+".dlq" {
+			dlqFound = true
+		}
+	}
+	if !dlqFound {
+		t.Error("expected DLQ event when retries exhausted")
+	}
+}
+
+func TestTimeoutRetryPublishesRetryAndTimeoutEvents(t *testing.T) {
+	ms := newMockStore()
+	mh := &mockHermes{}
+	b := New(ms, mh, nil, nil, nil, testConfig(), discardLogger())
+
+	ctx := context.Background()
+	past := time.Now().Add(-10 * time.Second)
+	task := &store.Task{
+		Owner:                "system",
+		Title:                "timeout events test",
+		RequiredCapabilities: []string{"research"},
+		Status:               store.StatusAssigned,
+		AssignedAgent:        "scout",
+		TimeoutSeconds:       1,
+		MaxRetries:           3,
+		RetryCount:           0,
+		AssignedAt:           &past,
+		Source:               "manual",
+		RetryEligible:        true,
+	}
+	_ = ms.CreateTask(ctx, task)
+
+	b.checkTimeouts(ctx)
+
+	updated := ms.tasks[task.ID]
+	if updated.Status != store.StatusPending {
+		t.Errorf("expected pending (retry), got %s", updated.Status)
+	}
+
+	timeoutFound, retryFound := false, false
+	for _, p := range mh.published {
+		if p.subject == "swarm.task."+task.ID.String()+".timeout" {
+			timeoutFound = true
+		}
+		if p.subject == "swarm.task."+task.ID.String()+".retry" {
+			retryFound = true
+		}
+	}
+	if !timeoutFound {
+		t.Error("expected timeout event")
+	}
+	if !retryFound {
+		t.Error("expected retry event")
+	}
+}
+
+func TestTimeoutExhaustedPublishesDLQ(t *testing.T) {
+	ms := newMockStore()
+	mh := &mockHermes{}
+	b := New(ms, mh, nil, nil, nil, testConfig(), discardLogger())
+
+	ctx := context.Background()
+	past := time.Now().Add(-10 * time.Second)
+	task := &store.Task{
+		Owner:                "system",
+		Title:                "dlq timeout test",
+		RequiredCapabilities: []string{"research"},
+		Status:               store.StatusInProgress,
+		AssignedAgent:        "scout",
+		TimeoutSeconds:       1,
+		MaxRetries:           1,
+		RetryCount:           1,
+		AssignedAt:           &past,
+		StartedAt:            &past,
+		Source:               "manual",
+		RetryEligible:        true,
+	}
+	_ = ms.CreateTask(ctx, task)
+
+	b.checkTimeouts(ctx)
+
+	updated := ms.tasks[task.ID]
+	if updated.Status != store.StatusTimedOut {
+		t.Errorf("expected timed_out, got %s", updated.Status)
+	}
+	if updated.CompletedAt == nil {
+		t.Error("expected completed_at set on exhausted timeout")
+	}
+
+	timeoutFound, dlqFound := false, false
+	for _, p := range mh.published {
+		if p.subject == "swarm.task."+task.ID.String()+".timeout" {
+			timeoutFound = true
+		}
+		if p.subject == "swarm.task."+task.ID.String()+".dlq" {
+			dlqFound = true
+		}
+	}
+	if !timeoutFound {
+		t.Error("expected timeout event")
+	}
+	if !dlqFound {
+		t.Error("expected DLQ event on exhausted timeout")
+	}
+}
+
+func TestTimeoutAssignedState(t *testing.T) {
+	ms := newMockStore()
+	mh := &mockHermes{}
+	b := New(ms, mh, nil, nil, nil, testConfig(), discardLogger())
+
+	ctx := context.Background()
+	past := time.Now().Add(-10 * time.Second)
+	task := &store.Task{
+		Owner:                "system",
+		Title:                "assigned timeout",
+		RequiredCapabilities: []string{"research"},
+		Status:               store.StatusAssigned,
+		AssignedAgent:        "scout",
+		TimeoutSeconds:       1,
+		MaxRetries:           2,
+		RetryCount:           0,
+		AssignedAt:           &past,
+		Source:               "manual",
+		RetryEligible:        true,
+	}
+	_ = ms.CreateTask(ctx, task)
+
+	b.checkTimeouts(ctx)
+
+	updated := ms.tasks[task.ID]
+	if updated.Status != store.StatusPending {
+		t.Errorf("expected pending (retry from assigned timeout), got %s", updated.Status)
+	}
+}
+
+func TestCapabilityMatchCaseInsensitive(t *testing.T) {
+	p := forge.Persona{Name: "lily", Capabilities: []string{"Research", "ANALYSIS"}}
+
+	if score := CapabilityMatch(p, []string{"research"}); score != 1.0 {
+		t.Errorf("expected case-insensitive match, got %f", score)
+	}
+	if score := CapabilityMatch(p, []string{"analysis"}); score != 1.0 {
+		t.Errorf("expected case-insensitive match, got %f", score)
+	}
+	if score := CapabilityMatch(p, []string{"RESEARCH", "analysis"}); score != 1.0 {
+		t.Errorf("expected case-insensitive multi match, got %f", score)
+	}
+}
+
+func TestScoreCandidatePriorityWeighting(t *testing.T) {
+	s := newMockStore()
+	ctx := context.Background()
+	p := forge.Persona{Name: "lily", Slug: "lily", Capabilities: []string{"research"}}
+	state := &warren.AgentState{Name: "lily", Status: "ready", Policy: "always-on"}
+
+	lowPriority := &store.Task{RequiredCapabilities: []string{"research"}, Priority: 0}
+	highPriority := &store.Task{RequiredCapabilities: []string{"research"}, Priority: 10}
+
+	lowScore := ScoreCandidate(p, state, lowPriority, s, ctx, 3)
+	highScore := ScoreCandidate(p, state, highPriority, s, ctx, 3)
+
+	if highScore <= lowScore {
+		t.Errorf("expected high priority (10) to score higher than low (0): high=%f low=%f", highScore, lowScore)
+	}
+	// priority 0 → weight 1.0, priority 10 → weight 1.5
+	if math.Abs(lowScore-1.0) > 0.001 {
+		t.Errorf("expected priority 0 score 1.0, got %f", lowScore)
+	}
+	if math.Abs(highScore-1.5) > 0.001 {
+		t.Errorf("expected priority 10 score 1.5, got %f", highScore)
+	}
+}
+
+func TestHandleProgressTransitionsAssignedToInProgress(t *testing.T) {
+	ms := newMockStore()
+	b := New(ms, &mockHermes{}, nil, nil, nil, testConfig(), discardLogger())
+
+	ctx := context.Background()
+	now := time.Now()
+	task := &store.Task{
+		Owner:         "system",
+		Title:         "progress test",
+		Status:        store.StatusAssigned,
+		AssignedAgent: "scout",
+		AssignedAt:    &now,
+		Source:        "manual",
+	}
+	_ = ms.CreateTask(ctx, task)
+
+	b.handleProgress(map[string]interface{}{
+		"task_id":  task.ID.String(),
+		"agent_id": "scout",
+		"progress": 0.5,
+	})
+
+	updated := ms.tasks[task.ID]
+	if updated.Status != store.StatusInProgress {
+		t.Errorf("expected in_progress after progress event, got %s", updated.Status)
+	}
+	if updated.StartedAt == nil {
+		t.Error("expected started_at set on progress transition")
+	}
+}
+
+func TestHandleAgentStoppedClearsFields(t *testing.T) {
+	ms := newMockStore()
+	mh := &mockHermes{}
+	b := New(ms, mh, nil, nil, nil, testConfig(), discardLogger())
+
+	ctx := context.Background()
+	now := time.Now()
+	// One assigned, one in_progress
+	assigned := &store.Task{
+		Owner:         "system",
+		Title:         "assigned task",
+		Status:        store.StatusAssigned,
+		AssignedAgent: "lily",
+		AssignedAt:    &now,
+		Source:        "manual",
+	}
+	running := &store.Task{
+		Owner:         "system",
+		Title:         "running task",
+		Status:        store.StatusInProgress,
+		AssignedAgent: "lily",
+		AssignedAt:    &now,
+		StartedAt:     &now,
+		Source:        "manual",
+	}
+	_ = ms.CreateTask(ctx, assigned)
+	_ = ms.CreateTask(ctx, running)
+
+	b.HandleAgentStopped(ctx, "lily")
+
+	for _, id := range []uuid.UUID{assigned.ID, running.ID} {
+		task := ms.tasks[id]
+		if task.Status != store.StatusPending {
+			t.Errorf("task %s: expected pending, got %s", id, task.Status)
+		}
+		if task.AssignedAgent != "" {
+			t.Errorf("task %s: expected assigned_agent cleared", id)
+		}
+		if task.AssignedAt != nil {
+			t.Errorf("task %s: expected assigned_at cleared", id)
+		}
+		if task.StartedAt != nil {
+			t.Errorf("task %s: expected started_at cleared", id)
+		}
+	}
+
+	// Should have published reassigned events for both
+	reassignCount := 0
+	for _, p := range mh.published {
+		if p.subject == "swarm.task."+assigned.ID.String()+".reassigned" ||
+			p.subject == "swarm.task."+running.ID.String()+".reassigned" {
+			reassignCount++
+		}
+	}
+	if reassignCount != 2 {
+		t.Errorf("expected 2 reassigned events, got %d", reassignCount)
 	}
 }
 

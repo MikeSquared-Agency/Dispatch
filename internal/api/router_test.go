@@ -39,9 +39,21 @@ func (m *mockStore) CreateTask(_ context.Context, t *store.Task) error {
 func (m *mockStore) GetTask(_ context.Context, id uuid.UUID) (*store.Task, error) {
 	return m.tasks[id], nil
 }
-func (m *mockStore) ListTasks(_ context.Context, _ store.TaskFilter) ([]*store.Task, error) {
+func (m *mockStore) ListTasks(_ context.Context, f store.TaskFilter) ([]*store.Task, error) {
 	var out []*store.Task
 	for _, t := range m.tasks {
+		if f.Status != nil && t.Status != *f.Status {
+			continue
+		}
+		if f.Owner != "" && t.Owner != f.Owner {
+			continue
+		}
+		if f.Source != "" && t.Source != f.Source {
+			continue
+		}
+		if f.Agent != "" && t.AssignedAgent != f.Agent {
+			continue
+		}
 		out = append(out, t)
 	}
 	return out, nil
