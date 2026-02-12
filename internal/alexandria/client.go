@@ -9,20 +9,19 @@ import (
 	"time"
 )
 
-// Device represents an agent device registered in Alexandria.
 type Device struct {
-	ID      string `json:"id"`
-	Name    string `json:"name"`
-	OwnerID string `json:"owner_id"`
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	DeviceType string `json:"device_type"`
+	OwnerID    string `json:"owner_id"`
+	Identifier string `json:"identifier"`
 }
 
-// Client queries Alexandria for device/agent ownership.
 type Client interface {
 	ListDevices(ctx context.Context) ([]Device, error)
 	GetDevicesByOwner(ctx context.Context, ownerID string) ([]Device, error)
 }
 
-// HTTPClient implements Client via Alexandria's REST API.
 type HTTPClient struct {
 	baseURL    string
 	httpClient *http.Client
@@ -33,6 +32,10 @@ func NewHTTPClient(baseURL string) *HTTPClient {
 		baseURL:    baseURL,
 		httpClient: &http.Client{Timeout: 10 * time.Second},
 	}
+}
+
+type devicesResponse struct {
+	Data []Device `json:"data"`
 }
 
 func (c *HTTPClient) ListDevices(ctx context.Context) ([]Device, error) {
@@ -56,11 +59,11 @@ func (c *HTTPClient) ListDevices(ctx context.Context) ([]Device, error) {
 		return nil, fmt.Errorf("alexandria: %d %s", resp.StatusCode, string(body))
 	}
 
-	var devices []Device
-	if err := json.Unmarshal(body, &devices); err != nil {
+	var wrapper devicesResponse
+	if err := json.Unmarshal(body, &wrapper); err != nil {
 		return nil, err
 	}
-	return devices, nil
+	return wrapper.Data, nil
 }
 
 func (c *HTTPClient) GetDevicesByOwner(ctx context.Context, ownerID string) ([]Device, error) {
