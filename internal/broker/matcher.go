@@ -66,7 +66,7 @@ func ScoreCandidate(persona forge.Persona, state *warren.AgentState, task *store
 	case "sleeping":
 		availMultiplier = 0.8
 	case "busy":
-		running, err := s.GetRunningTasksForAgent(ctx, persona.Name)
+		running, err := s.GetRunningTasksForAgent(ctx, persona.Slug)
 		if err != nil || len(running) >= maxConcurrent {
 			return 0
 		}

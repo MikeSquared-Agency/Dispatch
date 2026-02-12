@@ -101,6 +101,7 @@ func (b *Broker) processPendingTasks(ctx context.Context) {
 		return
 	}
 
+	b.logger.Info("processing pending tasks", "count", len(tasks))
 	for _, task := range tasks {
 		if err := b.assignTask(ctx, task); err != nil {
 			b.logger.Warn("failed to assign task", "task_id", task.ID, "error", err)
@@ -109,10 +110,13 @@ func (b *Broker) processPendingTasks(ctx context.Context) {
 }
 
 func (b *Broker) assignTask(ctx context.Context, task *store.Task) error {
+	b.logger.Info("attempting assignment", "task_id", task.ID, "scope", task.Scope, "owner", task.Owner)
 	candidates, err := b.forge.GetAgentsByCapability(ctx, task.Scope)
 	if err != nil {
+		b.logger.Error("forge capability query failed", "error", err)
 		return err
 	}
+	b.logger.Info("capability candidates", "count", len(candidates), "scope", task.Scope)
 
 	// Owner-scoped filtering: if task has an owner, only allow agents owned by that owner
 	if task.Owner != "" && b.alexandria != nil {
@@ -132,10 +136,12 @@ func (b *Broker) assignTask(ctx context.Context, task *store.Task) error {
 				}
 			}
 			candidates = filtered
+			b.logger.Info("after owner filter", "count", len(candidates), "owner", task.Owner)
 		}
 	}
 
 	if len(candidates) == 0 {
+		b.logger.Warn("no candidates after filtering", "task_id", task.ID)
 		_ = b.store.CreateTaskEvent(ctx, &store.TaskEvent{
 			TaskID: task.ID,
 			Event:  "unmatched",
