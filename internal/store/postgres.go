@@ -31,43 +31,45 @@ func (s *PostgresStore) Close() error {
 	return nil
 }
 
-const taskColumns = `id, requester, owner, submitter, title, description, scope, priority, status, assignee,
-	result, error, context, timeout_ms, max_retries, retry_count, parent_id,
-	created_at, assigned_at, started_at, completed_at`
+const taskColumns = `task_id, title, description, owner, required_capabilities,
+	status, assigned_agent,
+	created_at, assigned_at, started_at, completed_at, updated_at,
+	result, error,
+	retry_count, max_retries, retry_eligible,
+	timeout_seconds,
+	priority, source, parent_task_id, metadata`
 
 func (s *PostgresStore) CreateTask(ctx context.Context, task *Task) error {
 	resultJSON, _ := json.Marshal(task.Result)
-	contextJSON, _ := json.Marshal(task.Context)
-
-	var ownerUUID *uuid.UUID
-	if task.Owner != "" {
-		if parsed, err := uuid.Parse(task.Owner); err == nil {
-			ownerUUID = &parsed
-		}
-	}
+	metadataJSON, _ := json.Marshal(task.Metadata)
 
 	return s.pool.QueryRow(ctx, `
-		INSERT INTO dispatch_tasks (requester, owner, submitter, title, description, scope, priority, status, context, timeout_ms, max_retries, parent_id, result)
+		INSERT INTO swarm_tasks (title, description, owner, required_capabilities,
+			status, timeout_seconds, max_retries, retry_eligible,
+			priority, source, parent_task_id, result, metadata)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-		RETURNING id, created_at`,
-		task.Requester, ownerUUID, task.Submitter, task.Title, task.Description, task.Scope, task.Priority,
-		task.Status, contextJSON, task.TimeoutMs, task.MaxRetries, task.ParentID, resultJSON,
-	).Scan(&task.ID, &task.CreatedAt)
+		RETURNING task_id, created_at, updated_at`,
+		task.Title, task.Description, task.Owner, task.RequiredCapabilities,
+		task.Status, task.TimeoutSeconds, task.MaxRetries, task.RetryEligible,
+		task.Priority, task.Source, task.ParentTaskID, resultJSON, metadataJSON,
+	).Scan(&task.ID, &task.CreatedAt, &task.UpdatedAt)
 }
 
 func (s *PostgresStore) GetTask(ctx context.Context, id uuid.UUID) (*Task, error) {
 	t := &Task{}
-	var resultJSON, contextJSON []byte
-	var ownerUUID *uuid.UUID
-	var assignee, taskError sql.NullString
+	var resultJSON, metadataJSON []byte
+	var assignedAgent, taskError sql.NullString
 	err := s.pool.QueryRow(ctx, `
 		SELECT `+taskColumns+`
-		FROM dispatch_tasks WHERE id = $1`, id,
+		FROM swarm_tasks WHERE task_id = $1`, id,
 	).Scan(
-		&t.ID, &t.Requester, &ownerUUID, &t.Submitter, &t.Title, &t.Description, &t.Scope, &t.Priority,
-		&t.Status, &assignee, &resultJSON, &taskError, &contextJSON,
-		&t.TimeoutMs, &t.MaxRetries, &t.RetryCount, &t.ParentID,
-		&t.CreatedAt, &t.AssignedAt, &t.StartedAt, &t.CompletedAt,
+		&t.ID, &t.Title, &t.Description, &t.Owner, &t.RequiredCapabilities,
+		&t.Status, &assignedAgent,
+		&t.CreatedAt, &t.AssignedAt, &t.StartedAt, &t.CompletedAt, &t.UpdatedAt,
+		&resultJSON, &taskError,
+		&t.RetryCount, &t.MaxRetries, &t.RetryEligible,
+		&t.TimeoutSeconds,
+		&t.Priority, &t.Source, &t.ParentTaskID, &metadataJSON,
 	)
 	if err == pgx.ErrNoRows {
 		return nil, nil
@@ -75,26 +77,23 @@ func (s *PostgresStore) GetTask(ctx context.Context, id uuid.UUID) (*Task, error
 	if err != nil {
 		return nil, err
 	}
-	if assignee.Valid {
-		t.Assignee = assignee.String
+	if assignedAgent.Valid {
+		t.AssignedAgent = assignedAgent.String
 	}
 	if taskError.Valid {
 		t.Error = taskError.String
 	}
-	if ownerUUID != nil {
-		t.Owner = ownerUUID.String()
-	}
 	if resultJSON != nil {
 		_ = json.Unmarshal(resultJSON, &t.Result)
 	}
-	if contextJSON != nil {
-		_ = json.Unmarshal(contextJSON, &t.Context)
+	if metadataJSON != nil {
+		_ = json.Unmarshal(metadataJSON, &t.Metadata)
 	}
 	return t, nil
 }
 
 func (s *PostgresStore) ListTasks(ctx context.Context, filter TaskFilter) ([]*Task, error) {
-	query := `SELECT ` + taskColumns + ` FROM dispatch_tasks WHERE 1=1`
+	query := `SELECT ` + taskColumns + ` FROM swarm_tasks WHERE 1=1`
 	args := []interface{}{}
 	n := 0
 
@@ -103,28 +102,23 @@ func (s *PostgresStore) ListTasks(ctx context.Context, filter TaskFilter) ([]*Ta
 		query += fmt.Sprintf(" AND status = $%d", n)
 		args = append(args, string(*filter.Status))
 	}
-	if filter.Requester != "" {
+	if filter.Agent != "" {
 		n++
-		query += fmt.Sprintf(" AND requester = $%d", n)
-		args = append(args, filter.Requester)
-	}
-	if filter.Assignee != "" {
-		n++
-		query += fmt.Sprintf(" AND assignee = $%d", n)
-		args = append(args, filter.Assignee)
-	}
-	if filter.Scope != "" {
-		n++
-		query += fmt.Sprintf(" AND scope = $%d", n)
-		args = append(args, filter.Scope)
+		query += fmt.Sprintf(" AND assigned_agent = $%d", n)
+		args = append(args, filter.Agent)
 	}
 	if filter.Owner != "" {
 		n++
 		query += fmt.Sprintf(" AND owner = $%d", n)
 		args = append(args, filter.Owner)
 	}
+	if filter.Source != "" {
+		n++
+		query += fmt.Sprintf(" AND source = $%d", n)
+		args = append(args, filter.Source)
+	}
 
-	query += " ORDER BY priority ASC, created_at ASC"
+	query += " ORDER BY priority DESC, created_at ASC"
 
 	limit := filter.Limit
 	if limit <= 0 {
@@ -152,8 +146,8 @@ func (s *PostgresStore) ListTasks(ctx context.Context, filter TaskFilter) ([]*Ta
 func (s *PostgresStore) GetPendingTasks(ctx context.Context) ([]*Task, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT `+taskColumns+`
-		FROM dispatch_tasks WHERE status = 'pending'
-		ORDER BY priority ASC, created_at ASC`)
+		FROM swarm_tasks WHERE status = 'pending'
+		ORDER BY priority DESC, created_at ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -161,10 +155,10 @@ func (s *PostgresStore) GetPendingTasks(ctx context.Context) ([]*Task, error) {
 	return scanTasks(rows)
 }
 
-func (s *PostgresStore) GetRunningTasksForAgent(ctx context.Context, agentID string) ([]*Task, error) {
+func (s *PostgresStore) GetActiveTasksForAgent(ctx context.Context, agentID string) ([]*Task, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT `+taskColumns+`
-		FROM dispatch_tasks WHERE assignee = $1 AND status IN ('assigned', 'running')`, agentID)
+		FROM swarm_tasks WHERE assigned_agent = $1 AND status IN ('assigned', 'in_progress')`, agentID)
 	if err != nil {
 		return nil, err
 	}
@@ -172,10 +166,10 @@ func (s *PostgresStore) GetRunningTasksForAgent(ctx context.Context, agentID str
 	return scanTasks(rows)
 }
 
-func (s *PostgresStore) GetRunningTasks(ctx context.Context) ([]*Task, error) {
+func (s *PostgresStore) GetActiveTasks(ctx context.Context) ([]*Task, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT `+taskColumns+`
-		FROM dispatch_tasks WHERE status IN ('assigned', 'running')`)
+		FROM swarm_tasks WHERE status IN ('assigned', 'in_progress')`)
 	if err != nil {
 		return nil, err
 	}
@@ -185,26 +179,25 @@ func (s *PostgresStore) GetRunningTasks(ctx context.Context) ([]*Task, error) {
 
 func (s *PostgresStore) UpdateTask(ctx context.Context, task *Task) error {
 	resultJSON, _ := json.Marshal(task.Result)
-	contextJSON, _ := json.Marshal(task.Context)
-
-	var ownerUUID *uuid.UUID
-	if task.Owner != "" {
-		if parsed, err := uuid.Parse(task.Owner); err == nil {
-			ownerUUID = &parsed
-		}
-	}
+	metadataJSON, _ := json.Marshal(task.Metadata)
 
 	_, err := s.pool.Exec(ctx, `
-		UPDATE dispatch_tasks SET
-			requester = $2, owner = $3, submitter = $4, title = $5, description = $6, scope = $7, priority = $8,
-			status = $9, assignee = $10, result = $11, error = $12, context = $13,
-			timeout_ms = $14, max_retries = $15, retry_count = $16, parent_id = $17,
-			assigned_at = $18, started_at = $19, completed_at = $20
-		WHERE id = $1`,
-		task.ID, task.Requester, ownerUUID, task.Submitter, task.Title, task.Description, task.Scope, task.Priority,
-		task.Status, task.Assignee, resultJSON, task.Error, contextJSON,
-		task.TimeoutMs, task.MaxRetries, task.RetryCount, task.ParentID,
+		UPDATE swarm_tasks SET
+			title = $2, description = $3, owner = $4, required_capabilities = $5,
+			status = $6, assigned_agent = $7,
+			assigned_at = $8, started_at = $9, completed_at = $10,
+			result = $11, error = $12,
+			retry_count = $13, max_retries = $14, retry_eligible = $15,
+			timeout_seconds = $16,
+			priority = $17, source = $18, parent_task_id = $19, metadata = $20
+		WHERE task_id = $1`,
+		task.ID, task.Title, task.Description, task.Owner, task.RequiredCapabilities,
+		task.Status, task.AssignedAgent,
 		task.AssignedAt, task.StartedAt, task.CompletedAt,
+		resultJSON, task.Error,
+		task.RetryCount, task.MaxRetries, task.RetryEligible,
+		task.TimeoutSeconds,
+		task.Priority, task.Source, task.ParentTaskID, metadataJSON,
 	)
 	return err
 }
@@ -212,7 +205,7 @@ func (s *PostgresStore) UpdateTask(ctx context.Context, task *Task) error {
 func (s *PostgresStore) CreateTaskEvent(ctx context.Context, event *TaskEvent) error {
 	payloadJSON, _ := json.Marshal(event.Payload)
 	return s.pool.QueryRow(ctx, `
-		INSERT INTO dispatch_task_events (task_id, event, agent_id, payload)
+		INSERT INTO swarm_task_events (task_id, event, agent_id, payload)
 		VALUES ($1, $2, $3, $4)
 		RETURNING id, created_at`,
 		event.TaskID, event.Event, event.AgentID, payloadJSON,
@@ -222,7 +215,7 @@ func (s *PostgresStore) CreateTaskEvent(ctx context.Context, event *TaskEvent) e
 func (s *PostgresStore) GetTaskEvents(ctx context.Context, taskID uuid.UUID) ([]*TaskEvent, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, task_id, event, agent_id, payload, created_at
-		FROM dispatch_task_events WHERE task_id = $1
+		FROM swarm_task_events WHERE task_id = $1
 		ORDER BY created_at ASC`, taskID)
 	if err != nil {
 		return nil, err
@@ -249,12 +242,12 @@ func (s *PostgresStore) GetStats(ctx context.Context) (*TaskStats, error) {
 	err := s.pool.QueryRow(ctx, `
 		SELECT
 			COALESCE(SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END), 0),
-			COALESCE(SUM(CASE WHEN status IN ('assigned','running') THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN status IN ('assigned','in_progress') THEN 1 ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0),
 			COALESCE(AVG(EXTRACT(EPOCH FROM (completed_at - assigned_at)) * 1000) FILTER (WHERE status = 'completed' AND completed_at IS NOT NULL AND assigned_at IS NOT NULL), 0)
-		FROM dispatch_tasks`,
-	).Scan(&stats.TotalPending, &stats.TotalRunning, &stats.TotalCompleted, &stats.TotalFailed, &stats.AvgCompletionMs)
+		FROM swarm_tasks`,
+	).Scan(&stats.TotalPending, &stats.TotalInProgress, &stats.TotalCompleted, &stats.TotalFailed, &stats.AvgCompletionMs)
 	return stats, err
 }
 
@@ -262,31 +255,30 @@ func scanTasks(rows pgx.Rows) ([]*Task, error) {
 	var tasks []*Task
 	for rows.Next() {
 		t := &Task{}
-		var resultJSON, contextJSON []byte
-		var ownerUUID *uuid.UUID
-		var assignee, taskError sql.NullString
+		var resultJSON, metadataJSON []byte
+		var assignedAgent, taskError sql.NullString
 		if err := rows.Scan(
-			&t.ID, &t.Requester, &ownerUUID, &t.Submitter, &t.Title, &t.Description, &t.Scope, &t.Priority,
-			&t.Status, &assignee, &resultJSON, &taskError, &contextJSON,
-			&t.TimeoutMs, &t.MaxRetries, &t.RetryCount, &t.ParentID,
-			&t.CreatedAt, &t.AssignedAt, &t.StartedAt, &t.CompletedAt,
+			&t.ID, &t.Title, &t.Description, &t.Owner, &t.RequiredCapabilities,
+			&t.Status, &assignedAgent,
+			&t.CreatedAt, &t.AssignedAt, &t.StartedAt, &t.CompletedAt, &t.UpdatedAt,
+			&resultJSON, &taskError,
+			&t.RetryCount, &t.MaxRetries, &t.RetryEligible,
+			&t.TimeoutSeconds,
+			&t.Priority, &t.Source, &t.ParentTaskID, &metadataJSON,
 		); err != nil {
 			return nil, err
 		}
-		if assignee.Valid {
-			t.Assignee = assignee.String
+		if assignedAgent.Valid {
+			t.AssignedAgent = assignedAgent.String
 		}
 		if taskError.Valid {
 			t.Error = taskError.String
 		}
-		if ownerUUID != nil {
-			t.Owner = ownerUUID.String()
-		}
 		if resultJSON != nil {
 			_ = json.Unmarshal(resultJSON, &t.Result)
 		}
-		if contextJSON != nil {
-			_ = json.Unmarshal(contextJSON, &t.Context)
+		if metadataJSON != nil {
+			_ = json.Unmarshal(metadataJSON, &t.Metadata)
 		}
 		tasks = append(tasks, t)
 	}

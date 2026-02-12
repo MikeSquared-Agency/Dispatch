@@ -32,6 +32,7 @@ func newMockStore() *mockStore {
 func (m *mockStore) CreateTask(_ context.Context, t *store.Task) error {
 	t.ID = uuid.New()
 	t.CreatedAt = time.Now()
+	t.UpdatedAt = time.Now()
 	m.tasks[t.ID] = t
 	return nil
 }
@@ -49,9 +50,9 @@ func (m *mockStore) UpdateTask(_ context.Context, t *store.Task) error {
 	m.tasks[t.ID] = t
 	return nil
 }
-func (m *mockStore) GetPendingTasks(_ context.Context) ([]*store.Task, error)                    { return nil, nil }
-func (m *mockStore) GetRunningTasksForAgent(_ context.Context, _ string) ([]*store.Task, error)  { return nil, nil }
-func (m *mockStore) GetRunningTasks(_ context.Context) ([]*store.Task, error)                    { return nil, nil }
+func (m *mockStore) GetPendingTasks(_ context.Context) ([]*store.Task, error)                      { return nil, nil }
+func (m *mockStore) GetActiveTasksForAgent(_ context.Context, _ string) ([]*store.Task, error)     { return nil, nil }
+func (m *mockStore) GetActiveTasks(_ context.Context) ([]*store.Task, error)                       { return nil, nil }
 func (m *mockStore) CreateTaskEvent(_ context.Context, e *store.TaskEvent) error {
 	e.ID = uuid.New()
 	m.events = append(m.events, e)
@@ -83,7 +84,7 @@ func (m *mockWarren) ListAgents(_ context.Context) ([]warren.AgentState, error) 
 
 type mockForge struct{}
 
-func (m *mockForge) ListPersonas(_ context.Context) ([]forge.Persona, error)                       { return nil, nil }
+func (m *mockForge) ListPersonas(_ context.Context) ([]forge.Persona, error)                   { return nil, nil }
 func (m *mockForge) GetAgentsByCapability(_ context.Context, _ string) ([]forge.Persona, error) { return nil, nil }
 
 func setupTestRouter() (http.Handler, *mockStore) {
@@ -98,7 +99,7 @@ func setupTestRouter() (http.Handler, *mockStore) {
 func TestCreateTask(t *testing.T) {
 	router, _ := setupTestRouter()
 
-	body := `{"title":"Test Task","scope":"research","priority":2,"owner":"550e8400-e29b-41d4-a716-446655440000"}`
+	body := `{"title":"Test Task","required_capabilities":["research"],"priority":2,"owner":"mike-d"}`
 	req := httptest.NewRequest("POST", "/api/v1/tasks", bytes.NewBufferString(body))
 	req.Header.Set("X-Agent-ID", "test-agent")
 	req.Header.Set("Content-Type", "application/json")
@@ -118,18 +119,15 @@ func TestCreateTask(t *testing.T) {
 	if task.Priority != 2 {
 		t.Errorf("expected priority 2, got %d", task.Priority)
 	}
-	if task.Owner != "550e8400-e29b-41d4-a716-446655440000" {
-		t.Errorf("expected owner UUID, got '%s'", task.Owner)
-	}
-	if task.Submitter != "test-agent" {
-		t.Errorf("expected submitter 'test-agent', got '%s'", task.Submitter)
+	if task.Owner != "mike-d" {
+		t.Errorf("expected owner 'mike-d', got '%s'", task.Owner)
 	}
 }
 
-func TestCreateTaskMissingScope(t *testing.T) {
+func TestCreateTaskMissingTitle(t *testing.T) {
 	router, _ := setupTestRouter()
 
-	body := `{"title":"No Scope"}`
+	body := `{"description":"No title"}`
 	req := httptest.NewRequest("POST", "/api/v1/tasks", bytes.NewBufferString(body))
 	req.Header.Set("X-Agent-ID", "test-agent")
 
@@ -211,8 +209,14 @@ func TestCompleteTask(t *testing.T) {
 	router, ms := setupTestRouter()
 
 	task := &store.Task{
-		Requester: "test", Title: "Complete Me", Scope: "code",
-		Priority: 3, Status: store.StatusRunning, TimeoutMs: 300000,
+		Owner:                "system",
+		Title:                "Complete Me",
+		RequiredCapabilities: []string{"code"},
+		Priority:             5,
+		Status:               store.StatusInProgress,
+		TimeoutSeconds:       300,
+		Source:                "manual",
+		RetryEligible:        true,
 	}
 	ms.CreateTask(context.Background(), task)
 

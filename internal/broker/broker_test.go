@@ -31,6 +31,7 @@ func newMockStore() *mockStore {
 func (m *mockStore) CreateTask(_ context.Context, t *store.Task) error {
 	t.ID = uuid.New()
 	t.CreatedAt = time.Now()
+	t.UpdatedAt = time.Now()
 	m.tasks[t.ID] = t
 	return nil
 }
@@ -57,19 +58,19 @@ func (m *mockStore) GetPendingTasks(_ context.Context) ([]*store.Task, error) {
 	}
 	return out, nil
 }
-func (m *mockStore) GetRunningTasksForAgent(_ context.Context, agentID string) ([]*store.Task, error) {
+func (m *mockStore) GetActiveTasksForAgent(_ context.Context, agentID string) ([]*store.Task, error) {
 	var out []*store.Task
 	for _, t := range m.tasks {
-		if t.Assignee == agentID && (t.Status == store.StatusRunning || t.Status == store.StatusAssigned) {
+		if t.AssignedAgent == agentID && (t.Status == store.StatusInProgress || t.Status == store.StatusAssigned) {
 			out = append(out, t)
 		}
 	}
 	return out, nil
 }
-func (m *mockStore) GetRunningTasks(_ context.Context) ([]*store.Task, error) {
+func (m *mockStore) GetActiveTasks(_ context.Context) ([]*store.Task, error) {
 	var out []*store.Task
 	for _, t := range m.tasks {
-		if t.Status == store.StatusRunning || t.Status == store.StatusAssigned {
+		if t.Status == store.StatusInProgress || t.Status == store.StatusAssigned {
 			out = append(out, t)
 		}
 	}
@@ -182,11 +183,20 @@ func testConfig() *config.Config {
 func TestCapabilityMatch(t *testing.T) {
 	p := forge.Persona{Name: "lily", Capabilities: []string{"research", "analysis"}}
 
-	if score := CapabilityMatch(p, "research"); score != 1.0 {
+	if score := CapabilityMatch(p, []string{"research"}); score != 1.0 {
 		t.Errorf("expected 1.0, got %f", score)
 	}
-	if score := CapabilityMatch(p, "code"); score != 0 {
+	if score := CapabilityMatch(p, []string{"code"}); score != 0 {
 		t.Errorf("expected 0, got %f", score)
+	}
+	if score := CapabilityMatch(p, []string{"research", "analysis"}); score != 1.0 {
+		t.Errorf("expected 1.0 for multi-cap match, got %f", score)
+	}
+	if score := CapabilityMatch(p, []string{"research", "code"}); score != 0 {
+		t.Errorf("expected 0 for partial multi-cap match, got %f", score)
+	}
+	if score := CapabilityMatch(p, nil); score != 1.0 {
+		t.Errorf("expected 1.0 for empty requirements, got %f", score)
 	}
 }
 
@@ -194,7 +204,7 @@ func TestScoreCandidate(t *testing.T) {
 	s := newMockStore()
 	ctx := context.Background()
 	p := forge.Persona{Name: "lily", Capabilities: []string{"research"}}
-	task := &store.Task{Scope: "research", Priority: 1}
+	task := &store.Task{RequiredCapabilities: []string{"research"}, Priority: 10}
 
 	tests := []struct {
 		name   string
@@ -202,9 +212,9 @@ func TestScoreCandidate(t *testing.T) {
 		policy string
 		want   float64
 	}{
-		{"always-on ready", "ready", "always-on", 1.0 * 1.0 * 1.0 * 1.4},
-		{"on-demand ready", "ready", "on-demand", 1.0 * 1.0 * 0.9 * 1.4},
-		{"on-demand sleeping", "sleeping", "on-demand", 1.0 * 0.8 * 0.6 * 1.4},
+		{"always-on ready", "ready", "always-on", 1.0 * 1.0 * 1.0 * 1.5},
+		{"on-demand ready", "ready", "on-demand", 1.0 * 1.0 * 0.9 * 1.5},
+		{"on-demand sleeping", "sleeping", "on-demand", 1.0 * 0.8 * 0.6 * 1.5},
 		{"degraded agent", "degraded", "always-on", 0},
 	}
 
@@ -221,9 +231,9 @@ func TestScoreCandidate(t *testing.T) {
 
 func TestPolicyMultiplier(t *testing.T) {
 	tests := []struct {
-		name   string
-		state  *warren.AgentState
-		want   float64
+		name  string
+		state *warren.AgentState
+		want  float64
 	}{
 		{"always-on ready", &warren.AgentState{Policy: "always-on", Status: "ready"}, 1.0},
 		{"on-demand ready", &warren.AgentState{Policy: "on-demand", Status: "ready"}, 0.9},
@@ -249,8 +259,8 @@ func TestBrokerAssignment(t *testing.T) {
 		"nova": {Name: "nova", Status: "sleeping", Policy: "on-demand"},
 	}}
 	mf := &mockForge{personas: []forge.Persona{
-		{Name: "lily", Capabilities: []string{"research", "analysis"}},
-		{Name: "nova", Capabilities: []string{"research", "code"}},
+		{Name: "lily", Slug: "lily", Capabilities: []string{"research", "analysis"}},
+		{Name: "nova", Slug: "nova", Capabilities: []string{"research", "code"}},
 	}}
 
 	cfg := testConfig()
@@ -258,12 +268,14 @@ func TestBrokerAssignment(t *testing.T) {
 
 	ctx := context.Background()
 	task := &store.Task{
-		Requester: "main",
-		Title:     "test task",
-		Scope:     "research",
-		Priority:  3,
-		Status:    store.StatusPending,
-		TimeoutMs: 5000,
+		Owner:                "system",
+		Title:                "test task",
+		RequiredCapabilities: []string{"research"},
+		Priority:             5,
+		Status:               store.StatusPending,
+		TimeoutSeconds:       5,
+		Source:               "manual",
+		RetryEligible:        true,
 	}
 	_ = ms.CreateTask(ctx, task)
 
@@ -273,8 +285,8 @@ func TestBrokerAssignment(t *testing.T) {
 	if updated.Status != store.StatusAssigned {
 		t.Errorf("expected assigned, got %s", updated.Status)
 	}
-	if updated.Assignee != "lily" {
-		t.Errorf("expected lily (ready+always-on), got %s", updated.Assignee)
+	if updated.AssignedAgent != "lily" {
+		t.Errorf("expected lily (ready+always-on), got %s", updated.AssignedAgent)
 	}
 }
 
@@ -287,8 +299,8 @@ func TestOwnerScopedFiltering(t *testing.T) {
 		"nova": {Name: "nova", Status: "ready", Policy: "always-on"},
 	}}
 	mf := &mockForge{personas: []forge.Persona{
-		{Name: "lily", Capabilities: []string{"research"}},
-		{Name: "nova", Capabilities: []string{"research"}},
+		{Name: "lily", Slug: "lily", Capabilities: []string{"research"}},
+		{Name: "nova", Slug: "nova", Capabilities: []string{"research"}},
 	}}
 	ma := &mockAlexandria{devices: []alexandria.Device{
 		{ID: "d1", Name: "nova", OwnerID: ownerID},
@@ -299,14 +311,14 @@ func TestOwnerScopedFiltering(t *testing.T) {
 
 	ctx := context.Background()
 	task := &store.Task{
-		Requester: "main",
-		Owner:     ownerID,
-		Submitter: "main",
-		Title:     "owner-scoped task",
-		Scope:     "research",
-		Priority:  3,
-		Status:    store.StatusPending,
-		TimeoutMs: 5000,
+		Owner:                ownerID,
+		Title:                "owner-scoped task",
+		RequiredCapabilities: []string{"research"},
+		Priority:             5,
+		Status:               store.StatusPending,
+		TimeoutSeconds:       5,
+		Source:               "manual",
+		RetryEligible:        true,
 	}
 	_ = ms.CreateTask(ctx, task)
 
@@ -317,8 +329,8 @@ func TestOwnerScopedFiltering(t *testing.T) {
 		t.Errorf("expected assigned, got %s", updated.Status)
 	}
 	// Should be nova (only agent owned by this owner)
-	if updated.Assignee != "nova" {
-		t.Errorf("expected nova (owner-scoped), got %s", updated.Assignee)
+	if updated.AssignedAgent != "nova" {
+		t.Errorf("expected nova (owner-scoped), got %s", updated.AssignedAgent)
 	}
 }
 
@@ -330,7 +342,7 @@ func TestOwnerScopedUnmatched(t *testing.T) {
 		"lily": {Name: "lily", Status: "ready", Policy: "always-on"},
 	}}
 	mf := &mockForge{personas: []forge.Persona{
-		{Name: "lily", Capabilities: []string{"research"}},
+		{Name: "lily", Slug: "lily", Capabilities: []string{"research"}},
 	}}
 	// No devices owned by ownerID
 	ma := &mockAlexandria{devices: []alexandria.Device{
@@ -342,13 +354,14 @@ func TestOwnerScopedUnmatched(t *testing.T) {
 
 	ctx := context.Background()
 	task := &store.Task{
-		Requester: "main",
-		Owner:     ownerID,
-		Title:     "unmatched task",
-		Scope:     "research",
-		Priority:  3,
-		Status:    store.StatusPending,
-		TimeoutMs: 5000,
+		Owner:                ownerID,
+		Title:                "unmatched task",
+		RequiredCapabilities: []string{"research"},
+		Priority:             5,
+		Status:               store.StatusPending,
+		TimeoutSeconds:       5,
+		Source:               "manual",
+		RetryEligible:        true,
 	}
 	_ = ms.CreateTask(ctx, task)
 
@@ -392,17 +405,19 @@ func TestTimeoutRetry(t *testing.T) {
 	ctx := context.Background()
 	past := time.Now().Add(-10 * time.Second)
 	task := &store.Task{
-		Requester:  "main",
-		Title:      "timeout test",
-		Scope:      "research",
-		Priority:   3,
-		Status:     store.StatusRunning,
-		Assignee:   "lily",
-		TimeoutMs:  1000,
-		MaxRetries: 2,
-		RetryCount: 0,
-		AssignedAt: &past,
-		StartedAt:  &past,
+		Owner:                "system",
+		Title:                "timeout test",
+		RequiredCapabilities: []string{"research"},
+		Priority:             5,
+		Status:               store.StatusInProgress,
+		AssignedAgent:        "lily",
+		TimeoutSeconds:       1,
+		MaxRetries:           2,
+		RetryCount:           0,
+		AssignedAt:           &past,
+		StartedAt:            &past,
+		Source:               "manual",
+		RetryEligible:        true,
 	}
 	_ = ms.CreateTask(ctx, task)
 
@@ -426,25 +441,27 @@ func TestTimeoutExhausted(t *testing.T) {
 	ctx := context.Background()
 	past := time.Now().Add(-10 * time.Second)
 	task := &store.Task{
-		Requester:  "main",
-		Title:      "timeout exhausted",
-		Scope:      "research",
-		Priority:   3,
-		Status:     store.StatusRunning,
-		Assignee:   "lily",
-		TimeoutMs:  1000,
-		MaxRetries: 1,
-		RetryCount: 1,
-		AssignedAt: &past,
-		StartedAt:  &past,
+		Owner:                "system",
+		Title:                "timeout exhausted",
+		RequiredCapabilities: []string{"research"},
+		Priority:             5,
+		Status:               store.StatusInProgress,
+		AssignedAgent:        "lily",
+		TimeoutSeconds:       1,
+		MaxRetries:           1,
+		RetryCount:           1,
+		AssignedAt:           &past,
+		StartedAt:            &past,
+		Source:               "manual",
+		RetryEligible:        true,
 	}
 	_ = ms.CreateTask(ctx, task)
 
 	b.checkTimeouts(ctx)
 
 	updated := ms.tasks[task.ID]
-	if updated.Status != store.StatusTimeout {
-		t.Errorf("expected timeout, got %s", updated.Status)
+	if updated.Status != store.StatusTimedOut {
+		t.Errorf("expected timed_out, got %s", updated.Status)
 	}
 }
 
@@ -456,14 +473,16 @@ func TestHandleAgentStopped(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now()
 	task := &store.Task{
-		Requester:  "main",
-		Title:      "running task",
-		Scope:      "code",
-		Priority:   3,
-		Status:     store.StatusRunning,
-		Assignee:   "lily",
-		AssignedAt: &now,
-		StartedAt:  &now,
+		Owner:                "system",
+		Title:                "running task",
+		RequiredCapabilities: []string{"code"},
+		Priority:             5,
+		Status:               store.StatusInProgress,
+		AssignedAgent:        "lily",
+		AssignedAt:           &now,
+		StartedAt:            &now,
+		Source:               "manual",
+		RetryEligible:        true,
 	}
 	_ = ms.CreateTask(ctx, task)
 
@@ -473,8 +492,8 @@ func TestHandleAgentStopped(t *testing.T) {
 	if updated.Status != store.StatusPending {
 		t.Errorf("expected pending, got %s", updated.Status)
 	}
-	if updated.Assignee != "" {
-		t.Errorf("expected empty assignee, got %s", updated.Assignee)
+	if updated.AssignedAgent != "" {
+		t.Errorf("expected empty assigned_agent, got %s", updated.AssignedAgent)
 	}
 }
 

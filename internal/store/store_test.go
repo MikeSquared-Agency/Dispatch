@@ -6,10 +6,10 @@ import (
 
 func TestTaskStatusValues(t *testing.T) {
 	statuses := []TaskStatus{
-		StatusPending, StatusAssigned, StatusRunning,
-		StatusCompleted, StatusFailed, StatusCancelled, StatusTimeout,
+		StatusPending, StatusAssigned, StatusInProgress,
+		StatusCompleted, StatusFailed, StatusTimedOut,
 	}
-	expected := []string{"pending", "assigned", "running", "completed", "failed", "cancelled", "timeout"}
+	expected := []string{"pending", "assigned", "in_progress", "completed", "failed", "timed_out"}
 	for i, s := range statuses {
 		if string(s) != expected[i] {
 			t.Errorf("expected %s, got %s", expected[i], s)
@@ -32,13 +32,13 @@ func TestTaskFilterDefaults(t *testing.T) {
 
 func TestTaskFields(t *testing.T) {
 	task := Task{
-		Owner:     "550e8400-e29b-41d4-a716-446655440000",
-		Submitter: "main-agent",
+		Owner:  "mike-d",
+		Source: "kai",
 	}
 	if task.Owner == "" {
 		t.Error("expected owner to be set")
 	}
-	if task.Submitter == "" {
-		t.Error("expected submitter to be set")
+	if task.Source == "" {
+		t.Error("expected source to be set")
 	}
 }

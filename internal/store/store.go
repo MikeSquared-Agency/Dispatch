@@ -10,47 +10,58 @@ import (
 type TaskStatus string
 
 const (
-	StatusPending   TaskStatus = "pending"
-	StatusAssigned  TaskStatus = "assigned"
-	StatusRunning   TaskStatus = "running"
-	StatusCompleted TaskStatus = "completed"
-	StatusFailed    TaskStatus = "failed"
-	StatusCancelled TaskStatus = "cancelled"
-	StatusTimeout   TaskStatus = "timeout"
+	StatusPending    TaskStatus = "pending"
+	StatusAssigned   TaskStatus = "assigned"
+	StatusInProgress TaskStatus = "in_progress"
+	StatusCompleted  TaskStatus = "completed"
+	StatusFailed     TaskStatus = "failed"
+	StatusTimedOut   TaskStatus = "timed_out"
 )
 
 type Task struct {
-	ID          uuid.UUID              `json:"id"`
-	Requester   string                 `json:"requester"`
-	Owner       string                 `json:"owner,omitempty"`
-	Submitter   string                 `json:"submitter,omitempty"`
-	Title       string                 `json:"title"`
-	Description string                 `json:"description,omitempty"`
-	Scope       string                 `json:"scope"`
-	Priority    int                    `json:"priority"`
-	Status      TaskStatus             `json:"status"`
-	Assignee    string                 `json:"assignee,omitempty"`
-	Result      map[string]interface{} `json:"result,omitempty"`
-	Error       string                 `json:"error,omitempty"`
-	Context     map[string]interface{} `json:"context,omitempty"`
-	TimeoutMs   int                    `json:"timeout_ms"`
-	MaxRetries  int                    `json:"max_retries"`
-	RetryCount  int                    `json:"retry_count"`
-	ParentID    *uuid.UUID             `json:"parent_id,omitempty"`
-	CreatedAt   time.Time              `json:"created_at"`
-	AssignedAt  *time.Time             `json:"assigned_at,omitempty"`
-	StartedAt   *time.Time             `json:"started_at,omitempty"`
-	CompletedAt *time.Time             `json:"completed_at,omitempty"`
+	ID                   uuid.UUID              `json:"task_id"`
+	Title                string                 `json:"title"`
+	Description          string                 `json:"description,omitempty"`
+	Owner                string                 `json:"owner"`
+	RequiredCapabilities []string               `json:"required_capabilities"`
+
+	// State
+	Status        TaskStatus `json:"status"`
+	AssignedAgent string     `json:"assigned_agent,omitempty"`
+
+	// Timestamps
+	CreatedAt   time.Time  `json:"created_at"`
+	AssignedAt  *time.Time `json:"assigned_at,omitempty"`
+	StartedAt   *time.Time `json:"started_at,omitempty"`
+	CompletedAt *time.Time `json:"completed_at,omitempty"`
+	UpdatedAt   time.Time  `json:"updated_at"`
+
+	// Result
+	Result map[string]interface{} `json:"result,omitempty"`
+	Error  string                 `json:"error,omitempty"`
+
+	// Retry
+	RetryCount    int  `json:"retry_count"`
+	MaxRetries    int  `json:"max_retries"`
+	RetryEligible bool `json:"retry_eligible"`
+
+	// Timeout
+	TimeoutSeconds int `json:"timeout_seconds"`
+
+	// Metadata
+	Priority     int                    `json:"priority"`
+	Source       string                 `json:"source"`
+	ParentTaskID *uuid.UUID             `json:"parent_task_id,omitempty"`
+	Metadata     map[string]interface{} `json:"metadata,omitempty"`
 }
 
 type TaskFilter struct {
-	Status    *TaskStatus
-	Requester string
-	Assignee  string
-	Scope     string
-	Owner     string
-	Limit     int
-	Offset    int
+	Status *TaskStatus
+	Owner  string
+	Agent  string
+	Source string
+	Limit  int
+	Offset int
 }
 
 type TaskEvent struct {
@@ -63,10 +74,10 @@ type TaskEvent struct {
 }
 
 type TaskStats struct {
-	TotalPending   int     `json:"total_pending"`
-	TotalRunning   int     `json:"total_running"`
-	TotalCompleted int     `json:"total_completed"`
-	TotalFailed    int     `json:"total_failed"`
+	TotalPending    int     `json:"total_pending"`
+	TotalInProgress int     `json:"total_in_progress"`
+	TotalCompleted  int     `json:"total_completed"`
+	TotalFailed     int     `json:"total_failed"`
 	AvgCompletionMs float64 `json:"avg_completion_ms"`
 }
 
@@ -75,15 +86,15 @@ type Store interface {
 	GetTask(ctx context.Context, id uuid.UUID) (*Task, error)
 	ListTasks(ctx context.Context, filter TaskFilter) ([]*Task, error)
 	UpdateTask(ctx context.Context, task *Task) error
-	
+
 	GetPendingTasks(ctx context.Context) ([]*Task, error)
-	GetRunningTasksForAgent(ctx context.Context, agentID string) ([]*Task, error)
-	GetRunningTasks(ctx context.Context) ([]*Task, error)
-	
+	GetActiveTasksForAgent(ctx context.Context, agentID string) ([]*Task, error)
+	GetActiveTasks(ctx context.Context) ([]*Task, error)
+
 	CreateTaskEvent(ctx context.Context, event *TaskEvent) error
 	GetTaskEvents(ctx context.Context, taskID uuid.UUID) ([]*TaskEvent, error)
-	
+
 	GetStats(ctx context.Context) (*TaskStats, error)
-	
+
 	Close() error
 }

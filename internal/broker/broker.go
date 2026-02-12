@@ -110,13 +110,24 @@ func (b *Broker) processPendingTasks(ctx context.Context) {
 }
 
 func (b *Broker) assignTask(ctx context.Context, task *store.Task) error {
-	b.logger.Info("attempting assignment", "task_id", task.ID, "scope", task.Scope, "owner", task.Owner)
-	candidates, err := b.forge.GetAgentsByCapability(ctx, task.Scope)
+	b.logger.Info("attempting assignment", "task_id", task.ID, "capabilities", task.RequiredCapabilities, "owner", task.Owner)
+
+	// Query forge for candidates using the primary required capability
+	var primaryCap string
+	if len(task.RequiredCapabilities) > 0 {
+		primaryCap = task.RequiredCapabilities[0]
+	}
+	if primaryCap == "" {
+		b.logger.Warn("task has no required capabilities", "task_id", task.ID)
+		return nil
+	}
+
+	candidates, err := b.forge.GetAgentsByCapability(ctx, primaryCap)
 	if err != nil {
 		b.logger.Error("forge capability query failed", "error", err)
 		return err
 	}
-	b.logger.Info("capability candidates", "count", len(candidates), "scope", task.Scope)
+	b.logger.Info("capability candidates", "count", len(candidates), "primary_cap", primaryCap)
 
 	// Owner-scoped filtering: if task has an owner, only allow agents owned by that owner
 	if task.Owner != "" && b.alexandria != nil {
@@ -148,9 +159,9 @@ func (b *Broker) assignTask(ctx context.Context, task *store.Task) error {
 		})
 		if b.hermes != nil {
 			_ = b.hermes.Publish(hermes.SubjectTaskUnmatched(task.ID.String()), map[string]interface{}{
-				"task_id": task.ID.String(),
-				"scope":   task.Scope,
-				"owner":   task.Owner,
+				"task_id":              task.ID.String(),
+				"required_capabilities": task.RequiredCapabilities,
+				"owner":                task.Owner,
 			})
 		}
 		return nil
@@ -200,7 +211,7 @@ func (b *Broker) assignTask(ctx context.Context, task *store.Task) error {
 
 	now := time.Now()
 	task.Status = store.StatusAssigned
-	task.Assignee = winner.persona.Slug
+	task.AssignedAgent = winner.persona.Slug
 	task.AssignedAt = &now
 
 	if err := b.store.UpdateTask(ctx, task); err != nil {
@@ -213,24 +224,23 @@ func (b *Broker) assignTask(ctx context.Context, task *store.Task) error {
 		AgentID: winner.persona.Name,
 	})
 
-	// Publish full task payload to NATS — no gateway delivery
 	if b.hermes != nil {
 		_ = b.hermes.Publish(hermes.SubjectTaskAssigned(task.ID.String()), task)
 	}
 
-	b.logger.Info("task assigned", "task_id", task.ID, "assignee", winner.persona.Name, "score", winner.score)
+	b.logger.Info("task assigned", "task_id", task.ID, "assigned_agent", winner.persona.Name, "score", winner.score)
 	return nil
 }
 
 func (b *Broker) HandleAgentStopped(ctx context.Context, agentID string) {
-	tasks, err := b.store.GetRunningTasksForAgent(ctx, agentID)
+	tasks, err := b.store.GetActiveTasksForAgent(ctx, agentID)
 	if err != nil {
 		b.logger.Error("failed to get tasks for stopped agent", "agent", agentID, "error", err)
 		return
 	}
 	for _, task := range tasks {
 		task.Status = store.StatusPending
-		task.Assignee = ""
+		task.AssignedAgent = ""
 		task.AssignedAt = nil
 		task.StartedAt = nil
 		if err := b.store.UpdateTask(ctx, task); err != nil {
@@ -261,31 +271,37 @@ func (b *Broker) SetupSubscriptions() {
 			return
 		}
 		task := &store.Task{
-			Requester:   req.Requester,
-			Owner:       req.Owner,
-			Submitter:   req.Submitter,
-			Title:       req.Title,
-			Description: req.Description,
-			Scope:       req.Scope,
-			Priority:    req.Priority,
-			Status:      store.StatusPending,
-			Context:     req.Context,
-			TimeoutMs:   req.TimeoutMs,
-			MaxRetries:  req.MaxRetries,
+			Owner:                req.Owner,
+			Title:                req.Title,
+			Description:          req.Description,
+			RequiredCapabilities: req.RequiredCapabilities,
+			Priority:             req.Priority,
+			Status:               store.StatusPending,
+			Metadata:             req.Metadata,
+			TimeoutSeconds:       req.TimeoutSeconds,
+			MaxRetries:           req.MaxRetries,
+			Source:               req.Source,
+			RetryEligible:        true,
 		}
-		if task.Priority == 0 {
-			task.Priority = 3
+		if task.Priority < 0 {
+			task.Priority = 0
 		}
-		if task.TimeoutMs == 0 {
-			task.TimeoutMs = 300000
+		if task.TimeoutSeconds == 0 {
+			task.TimeoutSeconds = 300
 		}
 		if task.MaxRetries == 0 {
-			task.MaxRetries = 1
+			task.MaxRetries = 3
+		}
+		if task.Source == "" {
+			task.Source = "manual"
+		}
+		if task.Owner == "" {
+			task.Owner = "system"
 		}
 		if err := b.store.CreateTask(context.Background(), task); err != nil {
 			b.logger.Error("failed to create task from NATS request", "error", err)
 		} else {
-			b.logger.Info("task created from NATS request", "task_id", task.ID, "scope", task.Scope)
+			b.logger.Info("task created from NATS request", "task_id", task.ID, "capabilities", task.RequiredCapabilities)
 		}
 	})
 
@@ -305,6 +321,15 @@ func (b *Broker) SetupSubscriptions() {
 			return
 		}
 		b.handleFailed(evt)
+	})
+
+	// Started events (agent acknowledges assignment)
+	_ = b.hermes.Subscribe("swarm.task.*.started", func(_ string, data []byte) {
+		var evt map[string]interface{}
+		if err := json.Unmarshal(data, &evt); err != nil {
+			return
+		}
+		b.handleStarted(evt)
 	})
 
 	// Progress events
@@ -358,14 +383,73 @@ func (b *Broker) handleFailed(evt hermes.TaskFailedEvent) {
 	if err != nil || task == nil {
 		return
 	}
-	now := time.Now()
 	task.Status = store.StatusFailed
 	task.Error = evt.Error
-	task.CompletedAt = &now
+	task.RetryEligible = evt.RetryEligible
 	_ = b.store.UpdateTask(ctx, task)
 	_ = b.store.CreateTaskEvent(ctx, &store.TaskEvent{
 		TaskID: task.ID,
 		Event:  "failed",
+	})
+
+	// If retry eligible and retries remain, transition back to pending
+	if task.RetryEligible && task.RetryCount < task.MaxRetries {
+		task.RetryCount++
+		task.Status = store.StatusPending
+		task.AssignedAgent = ""
+		task.AssignedAt = nil
+		task.StartedAt = nil
+		task.Error = ""
+		_ = b.store.UpdateTask(ctx, task)
+		if b.hermes != nil {
+			_ = b.hermes.Publish(hermes.SubjectTaskRetry(task.ID.String()), map[string]interface{}{
+				"task_id":        task.ID.String(),
+				"retry_count":    task.RetryCount,
+				"max_retries":    task.MaxRetries,
+				"previous_state": "failed",
+			})
+		}
+	} else if !task.RetryEligible || task.RetryCount >= task.MaxRetries {
+		// DLQ
+		now := time.Now()
+		task.CompletedAt = &now
+		_ = b.store.UpdateTask(ctx, task)
+		if b.hermes != nil {
+			_ = b.hermes.Publish(hermes.SubjectTaskDLQ(task.ID.String()), map[string]interface{}{
+				"task_id":     task.ID.String(),
+				"reason":      "execution_failed",
+				"retry_count": task.RetryCount,
+				"max_retries": task.MaxRetries,
+			})
+		}
+	}
+}
+
+func (b *Broker) handleStarted(evt map[string]interface{}) {
+	ctx := context.Background()
+	taskID, ok := evt["task_id"].(string)
+	if !ok {
+		return
+	}
+	id, err := uuid.Parse(taskID)
+	if err != nil {
+		return
+	}
+	task, err := b.store.GetTask(ctx, id)
+	if err != nil || task == nil {
+		return
+	}
+	if task.Status == store.StatusAssigned {
+		now := time.Now()
+		task.Status = store.StatusInProgress
+		task.StartedAt = &now
+		_ = b.store.UpdateTask(ctx, task)
+	}
+	agentID, _ := evt["agent"].(string)
+	_ = b.store.CreateTaskEvent(ctx, &store.TaskEvent{
+		TaskID:  task.ID,
+		Event:   "started",
+		AgentID: agentID,
 	})
 }
 
@@ -385,7 +469,7 @@ func (b *Broker) handleProgress(evt map[string]interface{}) {
 	}
 	if task.Status == store.StatusAssigned {
 		now := time.Now()
-		task.Status = store.StatusRunning
+		task.Status = store.StatusInProgress
 		task.StartedAt = &now
 		_ = b.store.UpdateTask(ctx, task)
 	}

@@ -22,15 +22,16 @@ func NewTasksHandler(s store.Store, h hermes.Client) *TasksHandler {
 }
 
 type CreateTaskRequest struct {
-	Title       string                 `json:"title"`
-	Description string                 `json:"description,omitempty"`
-	Scope       string                 `json:"scope"`
-	Owner       string                 `json:"owner,omitempty"`
-	Priority    int                    `json:"priority,omitempty"`
-	Context     map[string]interface{} `json:"context,omitempty"`
-	TimeoutMs   int                    `json:"timeout_ms,omitempty"`
-	MaxRetries  int                    `json:"max_retries,omitempty"`
-	ParentID    string                 `json:"parent_id,omitempty"`
+	Title                string                 `json:"title"`
+	Description          string                 `json:"description,omitempty"`
+	Owner                string                 `json:"owner"`
+	RequiredCapabilities []string               `json:"required_capabilities,omitempty"`
+	Priority             int                    `json:"priority,omitempty"`
+	Metadata             map[string]interface{} `json:"metadata,omitempty"`
+	TimeoutSeconds       int                    `json:"timeout_seconds,omitempty"`
+	MaxRetries           int                    `json:"max_retries,omitempty"`
+	Source               string                 `json:"source,omitempty"`
+	ParentTaskID         string                 `json:"parent_task_id,omitempty"`
 }
 
 func (h *TasksHandler) Create(w http.ResponseWriter, r *http.Request) {
@@ -39,42 +40,54 @@ func (h *TasksHandler) Create(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
 		return
 	}
-	if req.Title == "" || req.Scope == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "title and scope required"})
+	if req.Title == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "title required"})
 		return
 	}
 
-	submitter := r.Header.Get("X-Agent-ID")
+	owner := req.Owner
+	if owner == "" {
+		owner = r.Header.Get("X-Agent-ID")
+	}
+	if owner == "" {
+		owner = "system"
+	}
+
+	source := req.Source
+	if source == "" {
+		if agentID := r.Header.Get("X-Agent-ID"); agentID != "" {
+			source = "agent"
+		} else {
+			source = "manual"
+		}
+	}
 
 	task := &store.Task{
-		Requester:   submitter,
-		Owner:       req.Owner,
-		Submitter:   submitter,
-		Title:       req.Title,
-		Description: req.Description,
-		Scope:       req.Scope,
-		Priority:    req.Priority,
-		Status:      store.StatusPending,
-		Context:     req.Context,
-		TimeoutMs:   req.TimeoutMs,
-		MaxRetries:  req.MaxRetries,
+		Title:                req.Title,
+		Description:          req.Description,
+		Owner:                owner,
+		RequiredCapabilities: req.RequiredCapabilities,
+		Priority:             req.Priority,
+		Status:               store.StatusPending,
+		Metadata:             req.Metadata,
+		TimeoutSeconds:       req.TimeoutSeconds,
+		MaxRetries:           req.MaxRetries,
+		Source:               source,
+		RetryEligible:        true,
 	}
-	if task.Priority == 0 {
-		task.Priority = 3
-	}
-	if task.TimeoutMs == 0 {
-		task.TimeoutMs = 300000
+	if task.TimeoutSeconds == 0 {
+		task.TimeoutSeconds = 300
 	}
 	if task.MaxRetries == 0 {
-		task.MaxRetries = 1
+		task.MaxRetries = 3
 	}
-	if req.ParentID != "" {
-		pid, err := uuid.Parse(req.ParentID)
+	if req.ParentTaskID != "" {
+		pid, err := uuid.Parse(req.ParentTaskID)
 		if err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid parent_id"})
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid parent_task_id"})
 			return
 		}
-		task.ParentID = &pid
+		task.ParentTaskID = &pid
 	}
 
 	if err := h.store.CreateTask(r.Context(), task); err != nil {
@@ -82,15 +95,18 @@ func (h *TasksHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if h.hermes != nil {
+		_ = h.hermes.Publish(hermes.SubjectTaskCreated(task.ID.String()), task)
+	}
+
 	writeJSON(w, http.StatusCreated, task)
 }
 
 func (h *TasksHandler) List(w http.ResponseWriter, r *http.Request) {
 	filter := store.TaskFilter{
-		Requester: r.URL.Query().Get("requester"),
-		Assignee:  r.URL.Query().Get("assignee"),
-		Scope:     r.URL.Query().Get("scope"),
-		Owner:     r.URL.Query().Get("owner"),
+		Agent:  r.URL.Query().Get("agent"),
+		Owner:  r.URL.Query().Get("owner"),
+		Source: r.URL.Query().Get("source"),
 	}
 	if s := r.URL.Query().Get("status"); s != "" {
 		status := store.TaskStatus(s)
@@ -146,13 +162,8 @@ func (h *TasksHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if s, ok := patch["status"].(string); ok && s == "cancelled" {
-		task.Status = store.StatusCancelled
-		now := time.Now()
-		task.CompletedAt = &now
-	}
-	if ctx, ok := patch["context"].(map[string]interface{}); ok {
-		task.Context = ctx
+	if metadata, ok := patch["metadata"].(map[string]interface{}); ok {
+		task.Metadata = metadata
 	}
 
 	if err := h.store.UpdateTask(r.Context(), task); err != nil {
@@ -223,17 +234,19 @@ func (h *TasksHandler) Fail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var body struct {
-		Error string `json:"error"`
+		Error         string `json:"error"`
+		RetryEligible *bool  `json:"retry_eligible,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
 		return
 	}
 
-	now := time.Now()
 	task.Status = store.StatusFailed
 	task.Error = body.Error
-	task.CompletedAt = &now
+	if body.RetryEligible != nil {
+		task.RetryEligible = *body.RetryEligible
+	}
 
 	if err := h.store.UpdateTask(r.Context(), task); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
@@ -248,8 +261,9 @@ func (h *TasksHandler) Fail(w http.ResponseWriter, r *http.Request) {
 
 	if h.hermes != nil {
 		_ = h.hermes.Publish(hermes.SubjectTaskFailed(task.ID.String()), hermes.TaskFailedEvent{
-			TaskID: task.ID.String(),
-			Error:  body.Error,
+			TaskID:        task.ID.String(),
+			Error:         body.Error,
+			RetryEligible: task.RetryEligible,
 		})
 	}
 
@@ -271,7 +285,7 @@ func (h *TasksHandler) Progress(w http.ResponseWriter, r *http.Request) {
 
 	if task.Status == store.StatusAssigned {
 		now := time.Now()
-		task.Status = store.StatusRunning
+		task.Status = store.StatusInProgress
 		task.StartedAt = &now
 		if err := h.store.UpdateTask(r.Context(), task); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})

@@ -54,7 +54,7 @@ func (h *AdminHandler) Agents(w http.ResponseWriter, r *http.Request) {
 
 	var infos []AgentInfo
 	for _, a := range agents {
-		running, _ := h.store.GetRunningTasksForAgent(r.Context(), a.Name)
+		running, _ := h.store.GetActiveTasksForAgent(r.Context(), a.Name)
 		infos = append(infos, AgentInfo{
 			Name:         a.Name,
 			Status:       a.Status,
