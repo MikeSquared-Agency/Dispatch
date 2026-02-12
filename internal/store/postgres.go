@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 
@@ -58,12 +59,13 @@ func (s *PostgresStore) GetTask(ctx context.Context, id uuid.UUID) (*Task, error
 	t := &Task{}
 	var resultJSON, contextJSON []byte
 	var ownerUUID *uuid.UUID
+	var assignee, taskError sql.NullString
 	err := s.pool.QueryRow(ctx, `
 		SELECT `+taskColumns+`
 		FROM dispatch_tasks WHERE id = $1`, id,
 	).Scan(
 		&t.ID, &t.Requester, &ownerUUID, &t.Submitter, &t.Title, &t.Description, &t.Scope, &t.Priority,
-		&t.Status, &t.Assignee, &resultJSON, &t.Error, &contextJSON,
+		&t.Status, &assignee, &resultJSON, &taskError, &contextJSON,
 		&t.TimeoutMs, &t.MaxRetries, &t.RetryCount, &t.ParentID,
 		&t.CreatedAt, &t.AssignedAt, &t.StartedAt, &t.CompletedAt,
 	)
@@ -72,6 +74,12 @@ func (s *PostgresStore) GetTask(ctx context.Context, id uuid.UUID) (*Task, error
 	}
 	if err != nil {
 		return nil, err
+	}
+	if assignee.Valid {
+		t.Assignee = assignee.String
+	}
+	if taskError.Valid {
+		t.Error = taskError.String
 	}
 	if ownerUUID != nil {
 		t.Owner = ownerUUID.String()
@@ -256,13 +264,20 @@ func scanTasks(rows pgx.Rows) ([]*Task, error) {
 		t := &Task{}
 		var resultJSON, contextJSON []byte
 		var ownerUUID *uuid.UUID
+		var assignee, taskError sql.NullString
 		if err := rows.Scan(
 			&t.ID, &t.Requester, &ownerUUID, &t.Submitter, &t.Title, &t.Description, &t.Scope, &t.Priority,
-			&t.Status, &t.Assignee, &resultJSON, &t.Error, &contextJSON,
+			&t.Status, &assignee, &resultJSON, &taskError, &contextJSON,
 			&t.TimeoutMs, &t.MaxRetries, &t.RetryCount, &t.ParentID,
 			&t.CreatedAt, &t.AssignedAt, &t.StartedAt, &t.CompletedAt,
 		); err != nil {
 			return nil, err
+		}
+		if assignee.Valid {
+			t.Assignee = assignee.String
+		}
+		if taskError.Valid {
+			t.Error = taskError.String
 		}
 		if ownerUUID != nil {
 			t.Owner = ownerUUID.String()
