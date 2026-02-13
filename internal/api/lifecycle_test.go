@@ -29,7 +29,7 @@ func TestFullTaskLifecycle(t *testing.T) {
 	}
 
 	var created store.Task
-	json.NewDecoder(w.Body).Decode(&created)
+	_ = json.NewDecoder(w.Body).Decode(&created)
 	if created.Status != store.StatusPending {
 		t.Fatalf("create: expected pending, got %s", created.Status)
 	}
@@ -46,7 +46,7 @@ func TestFullTaskLifecycle(t *testing.T) {
 	}
 
 	var fetched store.Task
-	json.NewDecoder(w.Body).Decode(&fetched)
+	_ = json.NewDecoder(w.Body).Decode(&fetched)
 	if fetched.Title != "E2E Lifecycle" {
 		t.Errorf("get: expected title 'E2E Lifecycle', got '%s'", fetched.Title)
 	}
@@ -95,7 +95,7 @@ func TestFullTaskLifecycle(t *testing.T) {
 	}
 
 	var completed store.Task
-	json.NewDecoder(w.Body).Decode(&completed)
+	_ = json.NewDecoder(w.Body).Decode(&completed)
 	if completed.Status != store.StatusCompleted {
 		t.Errorf("complete: expected completed, got %s", completed.Status)
 	}
@@ -178,7 +178,7 @@ func TestTaskListFiltering(t *testing.T) {
 		{Title: "Task C", Owner: "system", Status: store.StatusPending, Source: "manual"},
 	}
 	for _, task := range tasks {
-		ms.CreateTask(nil, task)
+		_ = ms.CreateTask(nil, task)
 	}
 
 	tests := []struct {
@@ -286,7 +286,7 @@ func TestUpdateTaskMetadata(t *testing.T) {
 		Status: store.StatusPending,
 		Source: "manual",
 	}
-	ms.CreateTask(nil, task)
+	_ = ms.CreateTask(nil, task)
 
 	body := `{"metadata":{"key":"value","count":42}}`
 	req := httptest.NewRequest("PATCH", "/api/v1/tasks/"+task.ID.String(), bytes.NewBufferString(body))
@@ -320,7 +320,7 @@ func TestProgressEndpointOnAlreadyInProgress(t *testing.T) {
 		AssignedAgent: "nova",
 		Source:        "manual",
 	}
-	ms.CreateTask(nil, task)
+	_ = ms.CreateTask(nil, task)
 
 	req := httptest.NewRequest("POST", "/api/v1/tasks/"+task.ID.String()+"/progress",
 		bytes.NewBufferString(`{"progress":0.75}`))
