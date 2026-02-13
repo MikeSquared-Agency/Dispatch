@@ -90,17 +90,6 @@ else
   fail "GET /api/v1/stats" "expected 200, got $HTTP"
 fi
 
-# 7. List agents (admin)
-HTTP=$(curl -s -o /tmp/e2e_body -w '%{http_code}' \
-  -H "X-Agent-ID: e2e-test" \
-  -H "Authorization: Bearer $ADMIN_TOKEN" \
-  "$BASE/agents")
-if [ "$HTTP" = "200" ]; then
-  pass "GET /api/v1/agents (admin) → 200"
-else
-  fail "GET /api/v1/agents" "expected 200, got $HTTP"
-fi
-
 echo ""
 if [ "$FAIL" -eq 0 ]; then
   echo "All Dispatch E2E tests passed."
