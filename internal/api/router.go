@@ -8,11 +8,11 @@ import (
 	chiMiddleware "github.com/go-chi/chi/v5/middleware"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
-	"github.com/DarlingtonDeveloper/Dispatch/internal/broker"
-	"github.com/DarlingtonDeveloper/Dispatch/internal/forge"
-	"github.com/DarlingtonDeveloper/Dispatch/internal/hermes"
-	"github.com/DarlingtonDeveloper/Dispatch/internal/store"
-	"github.com/DarlingtonDeveloper/Dispatch/internal/warren"
+	"github.com/MikeSquared-Agency/Dispatch/internal/broker"
+	"github.com/MikeSquared-Agency/Dispatch/internal/forge"
+	"github.com/MikeSquared-Agency/Dispatch/internal/hermes"
+	"github.com/MikeSquared-Agency/Dispatch/internal/store"
+	"github.com/MikeSquared-Agency/Dispatch/internal/warren"
 )
 
 func NewRouter(s store.Store, h hermes.Client, w warren.Client, f forge.Client, b *broker.Broker, adminToken string, logger *slog.Logger) http.Handler {

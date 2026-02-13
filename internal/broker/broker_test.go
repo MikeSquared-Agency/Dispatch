@@ -10,12 +10,12 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/DarlingtonDeveloper/Dispatch/internal/alexandria"
-	"github.com/DarlingtonDeveloper/Dispatch/internal/config"
-	"github.com/DarlingtonDeveloper/Dispatch/internal/forge"
-	"github.com/DarlingtonDeveloper/Dispatch/internal/hermes"
-	"github.com/DarlingtonDeveloper/Dispatch/internal/store"
-	"github.com/DarlingtonDeveloper/Dispatch/internal/warren"
+	"github.com/MikeSquared-Agency/Dispatch/internal/alexandria"
+	"github.com/MikeSquared-Agency/Dispatch/internal/config"
+	"github.com/MikeSquared-Agency/Dispatch/internal/forge"
+	"github.com/MikeSquared-Agency/Dispatch/internal/hermes"
+	"github.com/MikeSquared-Agency/Dispatch/internal/store"
+	"github.com/MikeSquared-Agency/Dispatch/internal/warren"
 )
 
 // Mock implementations

@@ -4,8 +4,8 @@ import (
 	"context"
 	"time"
 
-	"github.com/DarlingtonDeveloper/Dispatch/internal/hermes"
-	"github.com/DarlingtonDeveloper/Dispatch/internal/store"
+	"github.com/MikeSquared-Agency/Dispatch/internal/hermes"
+	"github.com/MikeSquared-Agency/Dispatch/internal/store"
 )
 
 func (b *Broker) timeoutLoop(ctx context.Context) {

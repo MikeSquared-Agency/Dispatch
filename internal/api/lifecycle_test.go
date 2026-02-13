@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/DarlingtonDeveloper/Dispatch/internal/store"
+	"github.com/MikeSquared-Agency/Dispatch/internal/store"
 )
 
 // TestFullTaskLifecycle exercises the complete happy-path:

@@ -1,4 +1,4 @@
-module github.com/DarlingtonDeveloper/Dispatch
+module github.com/MikeSquared-Agency/Dispatch
 
 go 1.24.0
 

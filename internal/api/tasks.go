@@ -8,8 +8,8 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
-	"github.com/DarlingtonDeveloper/Dispatch/internal/hermes"
-	"github.com/DarlingtonDeveloper/Dispatch/internal/store"
+	"github.com/MikeSquared-Agency/Dispatch/internal/hermes"
+	"github.com/MikeSquared-Agency/Dispatch/internal/store"
 )
 
 type TasksHandler struct {

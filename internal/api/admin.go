@@ -5,10 +5,10 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/DarlingtonDeveloper/Dispatch/internal/broker"
-	"github.com/DarlingtonDeveloper/Dispatch/internal/store"
-	"github.com/DarlingtonDeveloper/Dispatch/internal/warren"
-	"github.com/DarlingtonDeveloper/Dispatch/internal/forge"
+	"github.com/MikeSquared-Agency/Dispatch/internal/broker"
+	"github.com/MikeSquared-Agency/Dispatch/internal/store"
+	"github.com/MikeSquared-Agency/Dispatch/internal/warren"
+	"github.com/MikeSquared-Agency/Dispatch/internal/forge"
 )
 
 type AdminHandler struct {

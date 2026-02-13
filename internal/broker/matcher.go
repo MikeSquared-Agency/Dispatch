@@ -4,9 +4,9 @@ import (
 	"context"
 	"strings"
 
-	"github.com/DarlingtonDeveloper/Dispatch/internal/forge"
-	"github.com/DarlingtonDeveloper/Dispatch/internal/store"
-	"github.com/DarlingtonDeveloper/Dispatch/internal/warren"
+	"github.com/MikeSquared-Agency/Dispatch/internal/forge"
+	"github.com/MikeSquared-Agency/Dispatch/internal/store"
+	"github.com/MikeSquared-Agency/Dispatch/internal/warren"
 )
 
 // CapabilityMatch returns 1.0 if the persona satisfies ALL required capabilities, 0 otherwise.
