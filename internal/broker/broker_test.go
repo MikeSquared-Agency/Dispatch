@@ -95,6 +95,18 @@ func (m *mockStore) GetTaskEvents(_ context.Context, taskID uuid.UUID) ([]*store
 func (m *mockStore) GetStats(_ context.Context) (*store.TaskStats, error) {
 	return &store.TaskStats{}, nil
 }
+func (m *mockStore) CreateAgentTaskHistory(_ context.Context, _ *store.AgentTaskHistory) error {
+	return nil
+}
+func (m *mockStore) GetAgentTaskHistory(_ context.Context, _ string, _ int) ([]*store.AgentTaskHistory, error) {
+	return nil, nil
+}
+func (m *mockStore) GetAgentAvgDuration(_ context.Context, _ string) (*float64, error) {
+	return nil, nil
+}
+func (m *mockStore) GetAgentAvgCost(_ context.Context, _ string) (*float64, error) {
+	return nil, nil
+}
 func (m *mockStore) Close() error { return nil }
 
 type mockHermes struct {
@@ -178,6 +190,23 @@ func testConfig() *config.Config {
 			DefaultTimeoutMs:      5000,
 			MaxConcurrentPerAgent: 3,
 			OwnerFilterEnabled:    true,
+		},
+		Scoring: config.ScoringConfig{
+			Weights: config.ScoringWeights{
+				Capability:     0.20,
+				Availability:   0.10,
+				RiskFit:        0.12,
+				CostEfficiency: 0.10,
+				Verifiability:  0.08,
+				Reversibility:  0.08,
+				ComplexityFit:  0.10,
+				UncertaintyFit: 0.07,
+				DurationFit:    0.05,
+				Contextuality:  0.05,
+				Subjectivity:   0.05,
+			},
+			FastPathEnabled: true,
+			ParetoEnabled:   false,
 		},
 	}
 }
@@ -1338,6 +1367,99 @@ func TestNilCapabilitiesWithOwnerFilter(t *testing.T) {
 	}
 	if updated.AssignedAgent != "nova" {
 		t.Errorf("expected nova (owner-scoped), got %s", updated.AssignedAgent)
+	}
+}
+
+func TestBrokerAssignmentV2Scoring(t *testing.T) {
+	ms := newMockStore()
+	mh := &mockHermes{}
+	mw := &mockWarren{states: map[string]*warren.AgentState{
+		"lily": {Name: "lily", Status: "ready", Policy: "always-on"},
+		"nova": {Name: "nova", Status: "sleeping", Policy: "on-demand"},
+	}}
+	mf := &mockForge{personas: []forge.Persona{
+		{Name: "lily", Slug: "lily", Capabilities: []string{"research", "analysis"}},
+		{Name: "nova", Slug: "nova", Capabilities: []string{"research", "code"}},
+	}}
+
+	cfg := testConfig()
+	b := New(ms, mh, mw, mf, nil, cfg, discardLogger())
+
+	ctx := context.Background()
+	task := &store.Task{
+		Owner:                "system",
+		Title:                "v2 scoring test",
+		RequiredCapabilities: []string{"research"},
+		Priority:             5,
+		Status:               store.StatusPending,
+		TimeoutSeconds:       60,
+		Source:               "manual",
+		RetryEligible:        true,
+	}
+	_ = ms.CreateTask(ctx, task)
+
+	b.processPendingTasks(ctx)
+
+	updated := ms.tasks[task.ID]
+	if updated.Status != store.StatusAssigned {
+		t.Errorf("expected assigned, got %s", updated.Status)
+	}
+	// Scoring v2 fields should be populated
+	if updated.ScoringVersion != 2 {
+		t.Errorf("expected scoring_version=2, got %d", updated.ScoringVersion)
+	}
+	if updated.ScoringFactors == nil {
+		t.Error("expected scoring_factors to be set")
+	}
+	if updated.OversightLevel == "" {
+		t.Error("expected oversight_level to be set")
+	}
+	// Verify total_score is in the factors
+	if _, ok := updated.ScoringFactors["total_score"]; !ok {
+		t.Error("expected total_score key in scoring_factors")
+	}
+}
+
+func TestFastPathAssignment(t *testing.T) {
+	ms := newMockStore()
+	mh := &mockHermes{}
+	mw := &mockWarren{states: map[string]*warren.AgentState{
+		"lily": {Name: "lily", Status: "ready", Policy: "always-on"},
+	}}
+	mf := &mockForge{personas: []forge.Persona{
+		{Name: "lily", Slug: "lily", Capabilities: []string{"research"}},
+	}}
+
+	cfg := testConfig()
+	b := New(ms, mh, mw, mf, nil, cfg, discardLogger())
+
+	ctx := context.Background()
+	// Task with low complexity, low risk, high reversibility → fast path eligible
+	task := &store.Task{
+		Owner:                "system",
+		Title:                "fast path test",
+		RequiredCapabilities: []string{"research"},
+		Priority:             1,
+		Status:               store.StatusPending,
+		TimeoutSeconds:       60,
+		Source:               "manual",
+		RetryEligible:        true,
+		Metadata: map[string]interface{}{
+			"complexity":    0.1,
+			"risk":          0.1,
+			"reversibility": 0.9,
+		},
+	}
+	_ = ms.CreateTask(ctx, task)
+
+	b.processPendingTasks(ctx)
+
+	updated := ms.tasks[task.ID]
+	if updated.Status != store.StatusAssigned {
+		t.Errorf("expected assigned, got %s", updated.Status)
+	}
+	if !updated.FastPath {
+		t.Error("expected fast_path=true for low-risk simple task")
 	}
 }
 
