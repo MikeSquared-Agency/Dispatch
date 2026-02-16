@@ -666,7 +666,7 @@ func (s *PostgresStore) SatisfyAllCriteria(ctx context.Context, itemID uuid.UUID
 
 func (s *PostgresStore) GetGateStatus(ctx context.Context, itemID uuid.UUID, stage string) ([]GateCriterion, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT criterion, satisfied, satisfied_at, satisfied_by
+		SELECT criterion, satisfied, satisfied_at, satisfied_by, COALESCE(evidence, '')
 		FROM stage_gates
 		WHERE backlog_item_id = $1 AND stage = $2
 		ORDER BY created_at ASC`, itemID, stage)
@@ -679,7 +679,7 @@ func (s *PostgresStore) GetGateStatus(ctx context.Context, itemID uuid.UUID, sta
 	for rows.Next() {
 		var gc GateCriterion
 		var satisfiedBy sql.NullString
-		if err := rows.Scan(&gc.Criterion, &gc.Satisfied, &gc.SatisfiedAt, &satisfiedBy); err != nil {
+		if err := rows.Scan(&gc.Criterion, &gc.Satisfied, &gc.SatisfiedAt, &satisfiedBy, &gc.Evidence); err != nil {
 			return nil, err
 		}
 		if satisfiedBy.Valid {

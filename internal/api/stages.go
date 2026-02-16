@@ -110,10 +110,11 @@ func (h *StagesHandler) InitStages(w http.ResponseWriter, r *http.Request) {
 
 	if h.hermes != nil {
 		_ = h.hermes.Publish(hermes.SubjectStageAdvanced(id.String()), hermes.StageAdvancedEvent{
-			ItemID:        id.String(),
-			PreviousStage: "",
-			CurrentStage:  template[0],
-			Tier:          item.ModelTier,
+			ItemID:    id.String(),
+			ItemTitle: item.Title,
+			FromStage: "",
+			ToStage:   template[0],
+			Tier:      item.ModelTier,
 		})
 	}
 
@@ -174,14 +175,30 @@ func (h *StagesHandler) SubmitEvidence(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Publish evidence event
+	// Publish evidence event with enriched payload for Slack gateway
 	if h.hermes != nil {
+		// Build all_criteria snapshot for the Block Kit message
+		allCriteria, _ := h.store.GetGateStatus(r.Context(), id, req.Stage)
+		var criteriaSnapshot []hermes.GateEvidenceCriterion
+		for _, c := range allCriteria {
+			criteriaSnapshot = append(criteriaSnapshot, hermes.GateEvidenceCriterion{
+				Name:        c.Criterion,
+				Evidence:    c.Evidence,
+				HasEvidence: c.Evidence != "",
+			})
+		}
 		_ = h.hermes.Publish(hermes.SubjectGateEvidence(id.String()), hermes.GateEvidenceEvent{
 			ItemID:      id.String(),
+			ItemTitle:   item.Title,
+			ModelTier:   item.ModelTier,
 			Stage:       req.Stage,
+			StageIndex:  item.StageIndex,
+			TotalStages: len(item.StageTemplate),
 			Criterion:   req.Criterion,
 			Evidence:    req.Evidence,
 			SubmittedBy: req.SubmittedBy,
+			AgentID:     req.SubmittedBy,
+			AllCriteria: criteriaSnapshot,
 		})
 	}
 
@@ -230,7 +247,7 @@ func (h *StagesHandler) SatisfyGate(w http.ResponseWriter, r *http.Request) {
 			count, err := h.store.IncrementConsecutiveApprovals(r.Context(), "economy")
 			if err == nil && count >= 20 {
 				// Graduate to auto-approve
-				h.store.UpdateAutonomyConfig(r.Context(), "economy", true, count, 0)
+				_ = h.store.UpdateAutonomyConfig(r.Context(), "economy", true, count, 0)
 				if h.hermes != nil {
 					_ = h.hermes.Publish(hermes.SubjectAutonomyGraduated(), hermes.AutonomyGraduatedEvent{
 						Tier:          "economy",
@@ -241,7 +258,7 @@ func (h *StagesHandler) SatisfyGate(w http.ResponseWriter, r *http.Request) {
 			}
 		} else if strings.ToLower(req.Decision) == "rejected" || strings.Contains(strings.ToLower(req.Decision), "change") {
 			// Reset counter on rejection/changes
-			h.store.ResetAutonomyCounters(r.Context(), "economy")
+			_ = h.store.ResetAutonomyCounters(r.Context(), "economy")
 		}
 	}
 
@@ -334,7 +351,7 @@ func (h *StagesHandler) RequestChanges(w http.ResponseWriter, r *http.Request) {
 
 	// Handle economy tier autonomy counter (reset on change request)
 	if item.ModelTier == "economy" {
-		h.store.ResetAutonomyCounters(r.Context(), "economy")
+		_ = h.store.ResetAutonomyCounters(r.Context(), "economy")
 	}
 
 	// Publish changes requested event
@@ -402,7 +419,7 @@ func (h *StagesHandler) handleAutoAdvance(ctx context.Context, item *store.Backl
 	if item.StageIndex >= len(item.StageTemplate)-1 {
 		// Mark as completed
 		item.Status = store.BacklogStatusDone
-		h.store.UpdateBacklogItem(ctx, item)
+		_ = h.store.UpdateBacklogItem(ctx, item)
 
 		// Publish completion event
 		if h.hermes != nil {
@@ -428,10 +445,12 @@ func (h *StagesHandler) handleAutoAdvance(ctx context.Context, item *store.Backl
 	// Publish stage advancement
 	if h.hermes != nil {
 		_ = h.hermes.Publish(hermes.SubjectStageAdvanced(item.ID.String()), hermes.StageAdvancedEvent{
-			ItemID:        item.ID.String(),
-			PreviousStage: previousStage,
-			CurrentStage:  item.CurrentStage,
-			Tier:          item.ModelTier,
+			ItemID:     item.ID.String(),
+			ItemTitle:  item.Title,
+			FromStage:  previousStage,
+			ToStage:    item.CurrentStage,
+			StageIndex: item.StageIndex,
+			Tier:       item.ModelTier,
 		})
 	}
 }

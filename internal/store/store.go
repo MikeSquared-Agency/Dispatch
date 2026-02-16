@@ -130,6 +130,7 @@ type GateCriterion struct {
 	Satisfied   bool       `json:"satisfied"`
 	SatisfiedAt *time.Time `json:"satisfied_at,omitempty"`
 	SatisfiedBy string     `json:"satisfied_by,omitempty"`
+	Evidence    string     `json:"evidence,omitempty"`
 }
 
 // --- Backlog types ---
