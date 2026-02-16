@@ -78,7 +78,7 @@ func main() {
 	b.SetupSubscriptions()
 
 	// API server
-	router := api.NewRouter(db, hermesClient, warrenClient, forgeClient, b, cfg.Server.AdminToken, logger)
+	router := api.NewRouter(db, hermesClient, warrenClient, forgeClient, b, cfg, cfg.Server.AdminToken, logger)
 	apiServer := &http.Server{
 		Addr:    fmt.Sprintf(":%d", cfg.Server.Port),
 		Handler: router,

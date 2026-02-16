@@ -71,6 +71,15 @@ type Task struct {
 	FastPath                bool                   `json:"fast_path"`
 	ParetoFrontier          map[string]interface{} `json:"pareto_frontier,omitempty"`
 	AlternativeDecompositions map[string]interface{} `json:"alternative_decompositions,omitempty"`
+
+	// Model routing
+	Labels           []string `json:"labels,omitempty"`
+	FilePatterns     []string `json:"file_patterns,omitempty"`
+	OneWayDoor       bool     `json:"one_way_door"`
+	RecommendedModel string   `json:"recommended_model,omitempty"`
+	ModelTier        string   `json:"model_tier,omitempty"`
+	RoutingMethod    string   `json:"routing_method,omitempty"`
+	Runtime          string   `json:"runtime,omitempty"`
 }
 
 type TaskFilter struct {

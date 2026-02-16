@@ -9,13 +9,14 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/MikeSquared-Agency/Dispatch/internal/broker"
+	"github.com/MikeSquared-Agency/Dispatch/internal/config"
 	"github.com/MikeSquared-Agency/Dispatch/internal/forge"
 	"github.com/MikeSquared-Agency/Dispatch/internal/hermes"
 	"github.com/MikeSquared-Agency/Dispatch/internal/store"
 	"github.com/MikeSquared-Agency/Dispatch/internal/warren"
 )
 
-func NewRouter(s store.Store, h hermes.Client, w warren.Client, f forge.Client, b *broker.Broker, adminToken string, logger *slog.Logger) http.Handler {
+func NewRouter(s store.Store, h hermes.Client, w warren.Client, f forge.Client, b *broker.Broker, cfg *config.Config, adminToken string, logger *slog.Logger) http.Handler {
 	r := chi.NewRouter()
 
 	r.Use(chiMiddleware.Recoverer)
@@ -23,7 +24,7 @@ func NewRouter(s store.Store, h hermes.Client, w warren.Client, f forge.Client, 
 	r.Use(RequestLogger(logger))
 	r.Use(RateLimitMiddleware(120))
 
-	tasks := NewTasksHandler(s, h)
+	tasks := NewTasksHandler(s, h, cfg.ModelRouting)
 	admin := NewAdminHandler(s, w, f, b)
 	explain := NewExplainHandler(s)
 
@@ -37,6 +38,7 @@ func NewRouter(s store.Store, h hermes.Client, w warren.Client, f forge.Client, 
 		r.Post("/tasks/{id}/complete", tasks.Complete)
 		r.Post("/tasks/{id}/fail", tasks.Fail)
 		r.Post("/tasks/{id}/progress", tasks.Progress)
+		r.Patch("/tasks/{id}/discovery-complete", tasks.DiscoveryComplete)
 
 		r.Get("/scoring/explain/{task_id}", explain.Explain)
 

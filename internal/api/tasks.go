@@ -8,17 +8,20 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
+	"github.com/MikeSquared-Agency/Dispatch/internal/config"
 	"github.com/MikeSquared-Agency/Dispatch/internal/hermes"
+	"github.com/MikeSquared-Agency/Dispatch/internal/scoring"
 	"github.com/MikeSquared-Agency/Dispatch/internal/store"
 )
 
 type TasksHandler struct {
-	store  store.Store
-	hermes hermes.Client
+	store        store.Store
+	hermes       hermes.Client
+	modelRouting config.ModelRoutingConfig
 }
 
-func NewTasksHandler(s store.Store, h hermes.Client) *TasksHandler {
-	return &TasksHandler{store: s, hermes: h}
+func NewTasksHandler(s store.Store, h hermes.Client, mr config.ModelRoutingConfig) *TasksHandler {
+	return &TasksHandler{store: s, hermes: h, modelRouting: mr}
 }
 
 type CreateTaskRequest struct {
@@ -308,6 +311,102 @@ func (h *TasksHandler) Progress(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+type DiscoveryCompleteRequest struct {
+	ComplexityScore    *float64 `json:"complexity_score,omitempty"`
+	RiskScore          *float64 `json:"risk_score,omitempty"`
+	ReversibilityScore *float64 `json:"reversibility_score,omitempty"`
+	OneWayDoor         *bool    `json:"one_way_door,omitempty"`
+	Labels             []string `json:"labels,omitempty"`
+	FilePatterns       []string `json:"file_patterns,omitempty"`
+}
+
+// DiscoveryComplete updates task scores after MC Discovery reveals true complexity,
+// then re-derives model tier.
+// PATCH /api/v1/tasks/{id}/discovery-complete
+func (h *TasksHandler) DiscoveryComplete(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid task id"})
+		return
+	}
+
+	task, err := h.store.GetTask(r.Context(), id)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if task == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "task not found"})
+		return
+	}
+
+	// Only allow discovery-complete on assigned or in_progress tasks
+	if task.Status != store.StatusAssigned && task.Status != store.StatusInProgress {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "task must be assigned or in_progress"})
+		return
+	}
+
+	var req DiscoveryCompleteRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+
+	// Apply updated scores
+	if req.ComplexityScore != nil {
+		task.ComplexityScore = req.ComplexityScore
+	}
+	if req.RiskScore != nil {
+		task.RiskScore = req.RiskScore
+	}
+	if req.ReversibilityScore != nil {
+		task.ReversibilityScore = req.ReversibilityScore
+	}
+	if req.OneWayDoor != nil {
+		task.OneWayDoor = *req.OneWayDoor
+	}
+	if req.Labels != nil {
+		task.Labels = req.Labels
+	}
+	if req.FilePatterns != nil {
+		task.FilePatterns = req.FilePatterns
+	}
+
+	// Re-derive model tier from updated scores
+	if h.modelRouting.Enabled {
+		tier := scoring.DeriveModelTier(task, h.modelRouting, false)
+		task.ModelTier = tier.Name
+		task.RoutingMethod = "cold_start"
+		task.Runtime = scoring.RuntimeForTier(tier.Name, len(task.FilePatterns))
+		if len(tier.Models) > 0 {
+			task.RecommendedModel = tier.Models[0]
+		}
+	}
+
+	if err := h.store.UpdateTask(r.Context(), task); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	_ = h.store.CreateTaskEvent(r.Context(), &store.TaskEvent{
+		TaskID:  task.ID,
+		Event:   "discovery_complete",
+		AgentID: r.Header.Get("X-Agent-ID"),
+	})
+
+	if h.hermes != nil {
+		_ = h.hermes.Publish(hermes.SubjectTaskProgress(task.ID.String()), map[string]interface{}{
+			"event":             "discovery_complete",
+			"task_id":           task.ID.String(),
+			"model_tier":        task.ModelTier,
+			"recommended_model": task.RecommendedModel,
+			"runtime":           task.Runtime,
+		})
+	}
+
+	writeJSON(w, http.StatusOK, task)
 }
 
 func writeJSON(w http.ResponseWriter, status int, v interface{}) {

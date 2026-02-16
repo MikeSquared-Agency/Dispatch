@@ -50,6 +50,18 @@ func (h *ExplainHandler) Explain(w http.ResponseWriter, r *http.Request) {
 	if task.ParetoFrontier != nil {
 		resp["pareto_frontier"] = task.ParetoFrontier
 	}
+	if task.RecommendedModel != "" {
+		resp["recommended_model"] = task.RecommendedModel
+	}
+	if task.ModelTier != "" {
+		resp["model_tier"] = task.ModelTier
+	}
+	if task.RoutingMethod != "" {
+		resp["routing_method"] = task.RoutingMethod
+	}
+	if task.Runtime != "" {
+		resp["runtime"] = task.Runtime
+	}
 
 	writeJSON(w, http.StatusOK, resp)
 }

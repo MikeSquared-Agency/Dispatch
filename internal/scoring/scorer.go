@@ -12,6 +12,12 @@ type ScoringResult struct {
 	OversightLevel string         `json:"oversight_level"`
 	FastPath       bool           `json:"fast_path"`
 	Eligible       bool           `json:"eligible"`
+
+	// Model routing (populated after scoring by DeriveModelTier)
+	RecommendedModel string `json:"recommended_model,omitempty"`
+	ModelTier        string `json:"model_tier,omitempty"`
+	RoutingMethod    string `json:"routing_method,omitempty"`
+	Runtime          string `json:"runtime,omitempty"`
 }
 
 // Scorer orchestrates the 11-factor weighted additive scoring engine.

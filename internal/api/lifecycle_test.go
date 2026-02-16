@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/MikeSquared-Agency/Dispatch/internal/store"
 )
@@ -338,5 +339,161 @@ func TestProgressEndpointOnAlreadyInProgress(t *testing.T) {
 	updated := ms.tasks[task.ID]
 	if updated.Status != store.StatusInProgress {
 		t.Errorf("expected still in_progress, got %s", updated.Status)
+	}
+}
+
+// TestDiscoveryComplete exercises the discovery-complete endpoint.
+func TestDiscoveryComplete(t *testing.T) {
+	router, ms := setupTestRouter()
+
+	now := time.Now()
+	task := &store.Task{
+		Title:         "Discovery Test",
+		Owner:         "system",
+		Status:        store.StatusAssigned,
+		AssignedAgent: "scout",
+		AssignedAt:    &now,
+		Source:        "manual",
+	}
+	_ = ms.CreateTask(context.TODO(), task)
+
+	body := `{"complexity_score":0.8,"risk_score":0.7,"reversibility_score":0.2,"one_way_door":true,"labels":["architecture"],"file_patterns":["*.go","*.yaml"]}`
+	req := httptest.NewRequest("PATCH", "/api/v1/tasks/"+task.ID.String()+"/discovery-complete", bytes.NewBufferString(body))
+	req.Header.Set("X-Agent-ID", "scout")
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var result store.Task
+	_ = json.NewDecoder(w.Body).Decode(&result)
+
+	if result.ComplexityScore == nil || *result.ComplexityScore != 0.8 {
+		t.Error("expected complexity_score=0.8")
+	}
+	if !result.OneWayDoor {
+		t.Error("expected one_way_door=true")
+	}
+	if len(result.Labels) != 1 || result.Labels[0] != "architecture" {
+		t.Errorf("expected labels=[architecture], got %v", result.Labels)
+	}
+	if len(result.FilePatterns) != 2 {
+		t.Errorf("expected 2 file_patterns, got %d", len(result.FilePatterns))
+	}
+}
+
+// TestDiscoveryCompleteRejectsWrongState verifies the endpoint rejects tasks not in assigned/in_progress.
+func TestDiscoveryCompleteRejectsWrongState(t *testing.T) {
+	router, ms := setupTestRouter()
+
+	task := &store.Task{
+		Title:  "Wrong State",
+		Owner:  "system",
+		Status: store.StatusPending,
+		Source: "manual",
+	}
+	_ = ms.CreateTask(context.TODO(), task)
+
+	body := `{"complexity_score":0.5}`
+	req := httptest.NewRequest("PATCH", "/api/v1/tasks/"+task.ID.String()+"/discovery-complete", bytes.NewBufferString(body))
+	req.Header.Set("X-Agent-ID", "scout")
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusConflict {
+		t.Errorf("expected 409 for pending task, got %d", w.Code)
+	}
+}
+
+// TestDiscoveryCompleteInProgress verifies the endpoint works for in_progress tasks.
+func TestDiscoveryCompleteInProgress(t *testing.T) {
+	router, ms := setupTestRouter()
+
+	now := time.Now()
+	task := &store.Task{
+		Title:         "In Progress Discovery",
+		Owner:         "system",
+		Status:        store.StatusInProgress,
+		AssignedAgent: "scout",
+		AssignedAt:    &now,
+		StartedAt:     &now,
+		Source:        "manual",
+	}
+	_ = ms.CreateTask(context.TODO(), task)
+
+	body := `{"labels":["lint"],"file_patterns":["main.go"]}`
+	req := httptest.NewRequest("PATCH", "/api/v1/tasks/"+task.ID.String()+"/discovery-complete", bytes.NewBufferString(body))
+	req.Header.Set("X-Agent-ID", "scout")
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestDiscoveryCompleteNotFound verifies 404 for non-existent task.
+func TestDiscoveryCompleteNotFound(t *testing.T) {
+	router, _ := setupTestRouter()
+
+	body := `{"complexity_score":0.5}`
+	req := httptest.NewRequest("PATCH", "/api/v1/tasks/00000000-0000-0000-0000-000000000000/discovery-complete", bytes.NewBufferString(body))
+	req.Header.Set("X-Agent-ID", "scout")
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404, got %d", w.Code)
+	}
+}
+
+// TestExplainIncludesModelRouting verifies model routing fields in explain response.
+func TestExplainIncludesModelRouting(t *testing.T) {
+	router, ms := setupTestRouter()
+
+	task := &store.Task{
+		Title:            "Explain Model Routing",
+		Owner:            "system",
+		Status:           store.StatusAssigned,
+		AssignedAgent:    "lily",
+		Source:           "manual",
+		ScoringVersion:   2,
+		OversightLevel:   "review",
+		RecommendedModel: "claude-sonnet-4-5-20250929",
+		ModelTier:        "standard",
+		RoutingMethod:    "cold_start",
+		Runtime:          "openclaw",
+	}
+	_ = ms.CreateTask(context.TODO(), task)
+
+	req := httptest.NewRequest("GET", "/api/v1/scoring/explain/"+task.ID.String(), nil)
+	req.Header.Set("X-Agent-ID", "test")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	_ = json.NewDecoder(w.Body).Decode(&resp)
+
+	if resp["recommended_model"] != "claude-sonnet-4-5-20250929" {
+		t.Errorf("expected recommended_model in explain, got %v", resp["recommended_model"])
+	}
+	if resp["model_tier"] != "standard" {
+		t.Errorf("expected model_tier in explain, got %v", resp["model_tier"])
+	}
+	if resp["routing_method"] != "cold_start" {
+		t.Errorf("expected routing_method in explain, got %v", resp["routing_method"])
+	}
+	if resp["runtime"] != "openclaw" {
+		t.Errorf("expected runtime in explain, got %v", resp["runtime"])
 	}
 }

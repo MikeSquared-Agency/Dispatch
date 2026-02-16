@@ -10,15 +10,16 @@ import (
 )
 
 type Config struct {
-	Server      ServerConfig     `yaml:"server"`
-	Database    DatabaseConfig   `yaml:"database"`
-	Hermes      HermesConfig     `yaml:"hermes"`
-	Warren      WarrenConfig     `yaml:"warren"`
-	PromptForge ForgeConfig      `yaml:"promptforge"`
-	Alexandria  AlexandriaConfig `yaml:"alexandria"`
-	Assignment  AssignmentConfig `yaml:"assignment"`
-	Scoring     ScoringConfig    `yaml:"scoring"`
-	Logging     LoggingConfig    `yaml:"logging"`
+	Server       ServerConfig       `yaml:"server"`
+	Database     DatabaseConfig     `yaml:"database"`
+	Hermes       HermesConfig       `yaml:"hermes"`
+	Warren       WarrenConfig       `yaml:"warren"`
+	PromptForge  ForgeConfig        `yaml:"promptforge"`
+	Alexandria   AlexandriaConfig   `yaml:"alexandria"`
+	Assignment   AssignmentConfig   `yaml:"assignment"`
+	Scoring      ScoringConfig      `yaml:"scoring"`
+	ModelRouting ModelRoutingConfig `yaml:"model_routing"`
+	Logging      LoggingConfig      `yaml:"logging"`
 }
 
 type ServerConfig struct {
@@ -81,6 +82,38 @@ type LoggingConfig struct {
 	Format string `yaml:"format"`
 }
 
+type ModelRoutingConfig struct {
+	Enabled           bool              `yaml:"enabled"`
+	DefaultTier       string            `yaml:"default_tier"`
+	ColdStartRules    []ColdStartRule   `yaml:"cold_start_rules"`
+	Tiers             []ModelTierDef    `yaml:"tiers"`
+	LearningThreshold LearningThreshold `yaml:"learning_threshold"`
+	QualitySafetyNet  QualitySafetyNet  `yaml:"quality_safety_net"`
+}
+
+type ColdStartRule struct {
+	Name         string   `yaml:"name"`
+	Labels       []string `yaml:"labels"`
+	FilePatterns []string `yaml:"file_patterns"`
+	MaxFiles     int      `yaml:"max_files"`
+	Tier         string   `yaml:"tier"`
+}
+
+type ModelTierDef struct {
+	Name   string   `yaml:"name"`
+	Models []string `yaml:"models"`
+}
+
+type LearningThreshold struct {
+	MinTasks       int `yaml:"min_tasks"`
+	MinCorrected   int `yaml:"min_corrected"`
+}
+
+type QualitySafetyNet struct {
+	MaxDowngradePerSession int     `yaml:"max_downgrade_per_session"`
+	MinSuccessRate         float64 `yaml:"min_success_rate"`
+}
+
 func (c *Config) TickInterval() time.Duration {
 	return time.Duration(c.Assignment.TickIntervalMs) * time.Millisecond
 }
@@ -134,6 +167,28 @@ func Load(path string) (*Config, error) {
 			},
 			FastPathEnabled: true,
 			ParetoEnabled:   false,
+		},
+		ModelRouting: ModelRoutingConfig{
+			Enabled:     true,
+			DefaultTier: "standard",
+			ColdStartRules: []ColdStartRule{
+				{Name: "config-only", Labels: []string{"config"}, FilePatterns: []string{"*.yaml", "*.yml", "*.toml", "*.json", "*.env"}, Tier: "economy"},
+				{Name: "single-file-lint", Labels: []string{"lint", "format"}, MaxFiles: 1, Tier: "economy"},
+				{Name: "architecture", Labels: []string{"architecture", "design", "refactor"}, Tier: "premium"},
+			},
+			Tiers: []ModelTierDef{
+				{Name: "economy", Models: []string{"claude-haiku-4-5-20251001"}},
+				{Name: "standard", Models: []string{"claude-sonnet-4-5-20250929"}},
+				{Name: "premium", Models: []string{"claude-opus-4-6"}},
+			},
+			LearningThreshold: LearningThreshold{
+				MinTasks:     10,
+				MinCorrected: 5,
+			},
+			QualitySafetyNet: QualitySafetyNet{
+				MaxDowngradePerSession: 2,
+				MinSuccessRate:         0.8,
+			},
 		},
 		Logging: LoggingConfig{
 			Level:  "info",

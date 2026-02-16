@@ -127,9 +127,23 @@ func setupTestRouter() (http.Handler, *mockStore) {
 			},
 			FastPathEnabled: true,
 		},
+		ModelRouting: config.ModelRoutingConfig{
+			Enabled:     true,
+			DefaultTier: "standard",
+			ColdStartRules: []config.ColdStartRule{
+				{Name: "config-only", Labels: []string{"config"}, FilePatterns: []string{"*.yaml", "*.yml", "*.toml", "*.json", "*.env"}, Tier: "economy"},
+				{Name: "single-file-lint", Labels: []string{"lint", "format"}, MaxFiles: 1, Tier: "economy"},
+				{Name: "architecture", Labels: []string{"architecture", "design", "refactor"}, Tier: "premium"},
+			},
+			Tiers: []config.ModelTierDef{
+				{Name: "economy", Models: []string{"claude-haiku-4-5-20251001"}},
+				{Name: "standard", Models: []string{"claude-sonnet-4-5-20250929"}},
+				{Name: "premium", Models: []string{"claude-opus-4-6"}},
+			},
+		},
 	}
 	b := broker.New(ms, &mockHermes{}, &mockWarren{}, &mockForge{}, nil, cfg, logger)
-	router := NewRouter(ms, &mockHermes{}, &mockWarren{}, &mockForge{}, b, "test-token", logger)
+	router := NewRouter(ms, &mockHermes{}, &mockWarren{}, &mockForge{}, b, cfg, "test-token", logger)
 	return router, ms
 }
 

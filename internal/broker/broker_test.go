@@ -217,6 +217,20 @@ func testConfig() *config.Config {
 			FastPathEnabled: true,
 			ParetoEnabled:   false,
 		},
+		ModelRouting: config.ModelRoutingConfig{
+			Enabled:     true,
+			DefaultTier: "standard",
+			ColdStartRules: []config.ColdStartRule{
+				{Name: "config-only", Labels: []string{"config"}, FilePatterns: []string{"*.yaml", "*.yml", "*.toml", "*.json", "*.env"}, Tier: "economy"},
+				{Name: "single-file-lint", Labels: []string{"lint", "format"}, MaxFiles: 1, Tier: "economy"},
+				{Name: "architecture", Labels: []string{"architecture", "design", "refactor"}, Tier: "premium"},
+			},
+			Tiers: []config.ModelTierDef{
+				{Name: "economy", Models: []string{"claude-haiku-4-5-20251001"}},
+				{Name: "standard", Models: []string{"claude-sonnet-4-5-20250929"}},
+				{Name: "premium", Models: []string{"claude-opus-4-6"}},
+			},
+		},
 	}
 }
 
@@ -1652,6 +1666,190 @@ func TestTrustScoreZeroUsesDefault(t *testing.T) {
 	// oversight should land in the middle range
 	if updated.OversightLevel == "" {
 		t.Error("expected oversight_level to be set even without trust score")
+	}
+}
+
+func TestBrokerAssignmentPopulatesModelRouting(t *testing.T) {
+	ms := newMockStore()
+	mh := &mockHermes{}
+	mw := &mockWarren{states: map[string]*warren.AgentState{
+		"lily": {Name: "lily", Status: "ready", Policy: "always-on"},
+	}}
+	mf := &mockForge{personas: []forge.Persona{
+		{Name: "lily", Slug: "lily", Capabilities: []string{"research"}},
+	}}
+
+	cfg := testConfig()
+	b := New(ms, mh, mw, mf, nil, cfg, discardLogger())
+
+	ctx := context.Background()
+	task := &store.Task{
+		Owner:                "system",
+		Title:                "model routing test",
+		RequiredCapabilities: []string{"research"},
+		Priority:             5,
+		Status:               store.StatusPending,
+		TimeoutSeconds:       60,
+		Source:               "manual",
+		RetryEligible:        true,
+	}
+	_ = ms.CreateTask(ctx, task)
+
+	b.processPendingTasks(ctx)
+
+	updated := ms.tasks[task.ID]
+	if updated.Status != store.StatusAssigned {
+		t.Fatalf("expected assigned, got %s", updated.Status)
+	}
+	if updated.ModelTier == "" {
+		t.Error("expected model_tier to be set after assignment")
+	}
+	if updated.RecommendedModel == "" {
+		t.Error("expected recommended_model to be set after assignment")
+	}
+	if updated.RoutingMethod != "cold_start" {
+		t.Errorf("expected routing_method 'cold_start', got '%s'", updated.RoutingMethod)
+	}
+	if updated.Runtime == "" {
+		t.Error("expected runtime to be set after assignment")
+	}
+}
+
+func TestBrokerAssignmentModelRoutingWithLabels(t *testing.T) {
+	ms := newMockStore()
+	mh := &mockHermes{}
+	mw := &mockWarren{states: map[string]*warren.AgentState{
+		"lily": {Name: "lily", Status: "ready", Policy: "always-on"},
+	}}
+	mf := &mockForge{personas: []forge.Persona{
+		{Name: "lily", Slug: "lily", Capabilities: []string{"config"}},
+	}}
+
+	cfg := testConfig()
+	b := New(ms, mh, mw, mf, nil, cfg, discardLogger())
+
+	ctx := context.Background()
+	task := &store.Task{
+		Owner:                "system",
+		Title:                "config update",
+		RequiredCapabilities: []string{"config"},
+		Priority:             1,
+		Status:               store.StatusPending,
+		TimeoutSeconds:       60,
+		Source:               "manual",
+		RetryEligible:        true,
+		Labels:               []string{"config"},
+		FilePatterns:         []string{"app.yaml"},
+	}
+	_ = ms.CreateTask(ctx, task)
+
+	b.processPendingTasks(ctx)
+
+	updated := ms.tasks[task.ID]
+	if updated.Status != store.StatusAssigned {
+		t.Fatalf("expected assigned, got %s", updated.Status)
+	}
+	if updated.ModelTier != "economy" {
+		t.Errorf("expected economy tier for config task, got '%s'", updated.ModelTier)
+	}
+	if updated.Runtime != "picoclaw" {
+		t.Errorf("expected picoclaw runtime for economy tier, got '%s'", updated.Runtime)
+	}
+}
+
+func TestBrokerAssignmentOneWayDoorForcesPremium(t *testing.T) {
+	ms := newMockStore()
+	mh := &mockHermes{}
+	mw := &mockWarren{states: map[string]*warren.AgentState{
+		"lily": {Name: "lily", Status: "ready", Policy: "always-on"},
+	}}
+	mf := &mockForge{personas: []forge.Persona{
+		{Name: "lily", Slug: "lily", Capabilities: []string{"config"}},
+	}}
+
+	cfg := testConfig()
+	b := New(ms, mh, mw, mf, nil, cfg, discardLogger())
+
+	ctx := context.Background()
+	task := &store.Task{
+		Owner:                "system",
+		Title:                "irreversible deploy",
+		RequiredCapabilities: []string{"config"},
+		Priority:             5,
+		Status:               store.StatusPending,
+		TimeoutSeconds:       60,
+		Source:               "manual",
+		RetryEligible:        true,
+		Labels:               []string{"config"},
+		FilePatterns:         []string{"app.yaml"},
+		OneWayDoor:           true,
+	}
+	_ = ms.CreateTask(ctx, task)
+
+	b.processPendingTasks(ctx)
+
+	updated := ms.tasks[task.ID]
+	if updated.Status != store.StatusAssigned {
+		t.Fatalf("expected assigned, got %s", updated.Status)
+	}
+	if updated.ModelTier != "premium" {
+		t.Errorf("expected premium tier for one_way_door task, got '%s'", updated.ModelTier)
+	}
+	if updated.Runtime != "openclaw" {
+		t.Errorf("expected openclaw runtime for premium tier, got '%s'", updated.Runtime)
+	}
+}
+
+func TestBrokerAssignmentModelRoutingEvent(t *testing.T) {
+	ms := newMockStore()
+	mh := &mockHermes{}
+	mw := &mockWarren{states: map[string]*warren.AgentState{
+		"lily": {Name: "lily", Status: "ready", Policy: "always-on"},
+	}}
+	mf := &mockForge{personas: []forge.Persona{
+		{Name: "lily", Slug: "lily", Capabilities: []string{"research"}},
+	}}
+
+	cfg := testConfig()
+	b := New(ms, mh, mw, mf, nil, cfg, discardLogger())
+
+	ctx := context.Background()
+	task := &store.Task{
+		Owner:                "system",
+		Title:                "event check",
+		RequiredCapabilities: []string{"research"},
+		Priority:             5,
+		Status:               store.StatusPending,
+		TimeoutSeconds:       60,
+		Source:               "manual",
+		RetryEligible:        true,
+	}
+	_ = ms.CreateTask(ctx, task)
+
+	b.processPendingTasks(ctx)
+
+	// Find the dispatch assigned event
+	var dispatchEvt *hermes.DispatchAssignedEvent
+	for _, p := range mh.published {
+		if evt, ok := p.data.(hermes.DispatchAssignedEvent); ok {
+			dispatchEvt = &evt
+			break
+		}
+	}
+	if dispatchEvt == nil {
+		t.Fatal("expected DispatchAssignedEvent to be published")
+	}
+	if dispatchEvt.ModelTier == "" {
+		t.Error("expected model_tier in DispatchAssignedEvent")
+	}
+	if dispatchEvt.RecommendedModel == "" {
+		t.Error("expected recommended_model in DispatchAssignedEvent")
+	}
+	if dispatchEvt.RoutingMethod != "cold_start" {
+		t.Errorf("expected routing_method 'cold_start' in event, got '%s'", dispatchEvt.RoutingMethod)
+	}
+	if dispatchEvt.Runtime == "" {
+		t.Error("expected runtime in DispatchAssignedEvent")
 	}
 }
 
