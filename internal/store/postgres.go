@@ -42,7 +42,9 @@ const taskColumns = `task_id, title, description, owner, required_capabilities,
 	verifiability_score, reversibility_score, oversight_level,
 	scoring_factors, scoring_version, complexity_score, uncertainty_score,
 	duration_class, contextuality_score, subjectivity_score,
-	fast_path, pareto_frontier, alternative_decompositions`
+	fast_path, pareto_frontier, alternative_decompositions,
+	labels, file_patterns, one_way_door,
+	recommended_model, model_tier, routing_method, runtime`
 
 func (s *PostgresStore) CreateTask(ctx context.Context, task *Task) error {
 	resultJSON, _ := json.Marshal(task.Result)
@@ -52,13 +54,15 @@ func (s *PostgresStore) CreateTask(ctx context.Context, task *Task) error {
 		INSERT INTO swarm_tasks (title, description, owner, required_capabilities,
 			status, timeout_seconds, max_retries, retry_eligible,
 			priority, source, parent_task_id, result, metadata,
-			scoring_version, fast_path)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+			scoring_version, fast_path,
+			labels, file_patterns, one_way_door)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
 		RETURNING task_id, created_at, updated_at`,
 		task.Title, task.Description, task.Owner, task.RequiredCapabilities,
 		task.Status, task.TimeoutSeconds, task.MaxRetries, task.RetryEligible,
 		task.Priority, task.Source, task.ParentTaskID, resultJSON, metadataJSON,
 		task.ScoringVersion, task.FastPath,
+		task.Labels, task.FilePatterns, task.OneWayDoor,
 	).Scan(&task.ID, &task.CreatedAt, &task.UpdatedAt)
 }
 
@@ -72,7 +76,8 @@ func (s *PostgresStore) GetTask(ctx context.Context, id uuid.UUID) (*Task, error
 	var costEstTokens sql.NullInt64
 	var oversightLevel, durationClass sql.NullString
 	var scoringVersion sql.NullInt32
-	var fastPath sql.NullBool
+	var fastPath, oneWayDoor sql.NullBool
+	var recommendedModel, modelTier, routingMethod, runtime sql.NullString
 	err := s.pool.QueryRow(ctx, `
 		SELECT `+taskColumns+`
 		FROM swarm_tasks WHERE task_id = $1`, id,
@@ -89,6 +94,8 @@ func (s *PostgresStore) GetTask(ctx context.Context, id uuid.UUID) (*Task, error
 		&scoringFactorsJSON, &scoringVersion, &complexity, &uncertainty,
 		&durationClass, &contextuality, &subjectivity,
 		&fastPath, &paretoFrontierJSON, &altDecompJSON,
+		&t.Labels, &t.FilePatterns, &oneWayDoor,
+		&recommendedModel, &modelTier, &routingMethod, &runtime,
 	)
 	if err == pgx.ErrNoRows {
 		return nil, nil
@@ -111,6 +118,7 @@ func (s *PostgresStore) GetTask(ctx context.Context, id uuid.UUID) (*Task, error
 	applyNullableFields(t, riskScore, costEstTokens, costEstUSD, verifiability, reversibility,
 		oversightLevel, scoringFactorsJSON, scoringVersion, complexity, uncertainty,
 		durationClass, contextuality, subjectivity, fastPath, paretoFrontierJSON, altDecompJSON)
+	applyModelRoutingFields(t, oneWayDoor, recommendedModel, modelTier, routingMethod, runtime)
 	return t, nil
 }
 
@@ -219,7 +227,9 @@ func (s *PostgresStore) UpdateTask(ctx context.Context, task *Task) error {
 			verifiability_score = $24, reversibility_score = $25, oversight_level = $26,
 			scoring_factors = $27, scoring_version = $28, complexity_score = $29, uncertainty_score = $30,
 			duration_class = $31, contextuality_score = $32, subjectivity_score = $33,
-			fast_path = $34, pareto_frontier = $35, alternative_decompositions = $36
+			fast_path = $34, pareto_frontier = $35, alternative_decompositions = $36,
+			labels = $37, file_patterns = $38, one_way_door = $39,
+			recommended_model = $40, model_tier = $41, routing_method = $42, runtime = $43
 		WHERE task_id = $1`,
 		task.ID, task.Title, task.Description, task.Owner, task.RequiredCapabilities,
 		task.Status, task.AssignedAgent,
@@ -233,6 +243,9 @@ func (s *PostgresStore) UpdateTask(ctx context.Context, task *Task) error {
 		scoringFactorsJSON, task.ScoringVersion, task.ComplexityScore, task.UncertaintyScore,
 		nullString(task.DurationClass), task.ContextualityScore, task.SubjectivityScore,
 		task.FastPath, paretoFrontierJSON, altDecompJSON,
+		task.Labels, task.FilePatterns, task.OneWayDoor,
+		nullString(task.RecommendedModel), nullString(task.ModelTier),
+		nullString(task.RoutingMethod), nullString(task.Runtime),
 	)
 	return err
 }
@@ -298,7 +311,8 @@ func scanTasks(rows pgx.Rows) ([]*Task, error) {
 		var costEstTokens sql.NullInt64
 		var oversightLevel, durationClass sql.NullString
 		var scoringVersion sql.NullInt32
-		var fastPath sql.NullBool
+		var fastPath, oneWayDoor sql.NullBool
+		var recommendedModel, modelTier, routingMethod, runtime sql.NullString
 		if err := rows.Scan(
 			&t.ID, &t.Title, &t.Description, &t.Owner, &t.RequiredCapabilities,
 			&t.Status, &assignedAgent,
@@ -312,6 +326,8 @@ func scanTasks(rows pgx.Rows) ([]*Task, error) {
 			&scoringFactorsJSON, &scoringVersion, &complexity, &uncertainty,
 			&durationClass, &contextuality, &subjectivity,
 			&fastPath, &paretoFrontierJSON, &altDecompJSON,
+			&t.Labels, &t.FilePatterns, &oneWayDoor,
+			&recommendedModel, &modelTier, &routingMethod, &runtime,
 		); err != nil {
 			return nil, err
 		}
@@ -330,6 +346,7 @@ func scanTasks(rows pgx.Rows) ([]*Task, error) {
 		applyNullableFields(t, riskScore, costEstTokens, costEstUSD, verifiability, reversibility,
 			oversightLevel, scoringFactorsJSON, scoringVersion, complexity, uncertainty,
 			durationClass, contextuality, subjectivity, fastPath, paretoFrontierJSON, altDecompJSON)
+		applyModelRoutingFields(t, oneWayDoor, recommendedModel, modelTier, routingMethod, runtime)
 		tasks = append(tasks, t)
 	}
 	return tasks, rows.Err()
@@ -391,6 +408,28 @@ func applyNullableFields(t *Task,
 	}
 	if altDecompJSON != nil {
 		_ = json.Unmarshal(altDecompJSON, &t.AlternativeDecompositions)
+	}
+}
+
+// applyModelRoutingFields maps nullable model routing columns onto the Task struct.
+func applyModelRoutingFields(t *Task,
+	oneWayDoor sql.NullBool,
+	recommendedModel, modelTier, routingMethod, runtime sql.NullString,
+) {
+	if oneWayDoor.Valid {
+		t.OneWayDoor = oneWayDoor.Bool
+	}
+	if recommendedModel.Valid {
+		t.RecommendedModel = recommendedModel.String
+	}
+	if modelTier.Valid {
+		t.ModelTier = modelTier.String
+	}
+	if routingMethod.Valid {
+		t.RoutingMethod = routingMethod.String
+	}
+	if runtime.Valid {
+		t.Runtime = runtime.String
 	}
 }
 

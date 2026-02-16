@@ -48,12 +48,16 @@ type StatsEvent struct {
 
 // DispatchAssignedEvent carries the full v2 scoring breakdown for an assignment.
 type DispatchAssignedEvent struct {
-	TaskID         string      `json:"task_id"`
-	AssignedAgent  string      `json:"assigned_agent"`
-	TotalScore     float64     `json:"total_score"`
-	Factors        interface{} `json:"factors"`
-	OversightLevel string      `json:"oversight_level"`
-	FastPath       bool        `json:"fast_path"`
+	TaskID           string      `json:"task_id"`
+	AssignedAgent    string      `json:"assigned_agent"`
+	TotalScore       float64     `json:"total_score"`
+	Factors          interface{} `json:"factors"`
+	OversightLevel   string      `json:"oversight_level"`
+	FastPath         bool        `json:"fast_path"`
+	RecommendedModel string      `json:"recommended_model,omitempty"`
+	ModelTier        string      `json:"model_tier,omitempty"`
+	RoutingMethod    string      `json:"routing_method,omitempty"`
+	Runtime          string      `json:"runtime,omitempty"`
 }
 
 // DispatchCompletedEvent carries actuals recorded on task completion.

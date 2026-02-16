@@ -91,6 +91,29 @@ func TestLoadDefaults(t *testing.T) {
 		t.Error("expected pareto_enabled=false by default")
 	}
 
+	// Model routing defaults
+	if !cfg.ModelRouting.Enabled {
+		t.Error("expected model_routing enabled by default")
+	}
+	if cfg.ModelRouting.DefaultTier != "standard" {
+		t.Errorf("expected default_tier 'standard', got '%s'", cfg.ModelRouting.DefaultTier)
+	}
+	if len(cfg.ModelRouting.ColdStartRules) != 3 {
+		t.Errorf("expected 3 cold_start_rules, got %d", len(cfg.ModelRouting.ColdStartRules))
+	}
+	if len(cfg.ModelRouting.Tiers) != 3 {
+		t.Errorf("expected 3 tiers, got %d", len(cfg.ModelRouting.Tiers))
+	}
+	if cfg.ModelRouting.Tiers[0].Name != "economy" {
+		t.Errorf("expected first tier 'economy', got '%s'", cfg.ModelRouting.Tiers[0].Name)
+	}
+	if cfg.ModelRouting.LearningThreshold.MinTasks != 10 {
+		t.Errorf("expected min_tasks 10, got %d", cfg.ModelRouting.LearningThreshold.MinTasks)
+	}
+	if cfg.ModelRouting.QualitySafetyNet.MinSuccessRate != 0.8 {
+		t.Errorf("expected min_success_rate 0.8, got %f", cfg.ModelRouting.QualitySafetyNet.MinSuccessRate)
+	}
+
 	// Duration helpers
 	if cfg.TickInterval() != 5*time.Second {
 		t.Errorf("expected TickInterval 5s, got %v", cfg.TickInterval())

@@ -240,6 +240,25 @@ func (b *Broker) assignTask(ctx context.Context, task *store.Task) error {
 	// Apply v2 scoring fields to task for persistence
 	b.applyScoring(task, winner.result)
 
+	// Derive model tier after scoring
+	if b.cfg.ModelRouting.Enabled {
+		tier := scoring.DeriveModelTier(task, b.cfg.ModelRouting, false)
+		routingMethod := "cold_start"
+		runtime := scoring.RuntimeForTier(tier.Name, len(task.FilePatterns))
+		model := ""
+		if len(tier.Models) > 0 {
+			model = tier.Models[0]
+		}
+		task.RecommendedModel = model
+		task.ModelTier = tier.Name
+		task.RoutingMethod = routingMethod
+		task.Runtime = runtime
+		winner.result.RecommendedModel = model
+		winner.result.ModelTier = tier.Name
+		winner.result.RoutingMethod = routingMethod
+		winner.result.Runtime = runtime
+	}
+
 	if err := b.store.UpdateTask(ctx, task); err != nil {
 		return err
 	}
@@ -253,12 +272,16 @@ func (b *Broker) assignTask(ctx context.Context, task *store.Task) error {
 	if b.hermes != nil {
 		_ = b.hermes.Publish(hermes.SubjectTaskAssigned(task.ID.String()), task)
 		_ = b.hermes.Publish(hermes.SubjectDispatchAssigned(task.ID.String()), hermes.DispatchAssignedEvent{
-			TaskID:         task.ID.String(),
-			AssignedAgent:  winner.persona.Slug,
-			TotalScore:     winner.result.TotalScore,
-			Factors:        winner.result.Factors,
-			OversightLevel: winner.result.OversightLevel,
-			FastPath:       winner.result.FastPath,
+			TaskID:           task.ID.String(),
+			AssignedAgent:    winner.persona.Slug,
+			TotalScore:       winner.result.TotalScore,
+			Factors:          winner.result.Factors,
+			OversightLevel:   winner.result.OversightLevel,
+			FastPath:         winner.result.FastPath,
+			RecommendedModel: winner.result.RecommendedModel,
+			ModelTier:        winner.result.ModelTier,
+			RoutingMethod:    winner.result.RoutingMethod,
+			Runtime:          winner.result.Runtime,
 		})
 		if winner.result.OversightLevel != "" {
 			_ = b.hermes.Publish(hermes.SubjectDispatchOversight(task.ID.String()), hermes.OversightSetEvent{
