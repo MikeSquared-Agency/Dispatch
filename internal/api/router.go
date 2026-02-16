@@ -33,6 +33,24 @@ func NewRouter(s store.Store, h hermes.Client, w warren.Client, f forge.Client, 
 	overrides := NewOverridesHandler(s, h)
 	autonomy := NewAutonomyHandler(s)
 
+	// Health and identity endpoints
+	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
+		result := map[string]string{"status": "ok"}
+		ctx := r.Context()
+		if err := s.Ping(ctx); err != nil {
+			result["db"] = "error"
+		} else {
+			result["db"] = "ok"
+		}
+		writeJSON(w, http.StatusOK, result)
+	})
+	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]string{
+			"service": "dispatch",
+			"version": "0.1.0",
+		})
+	})
+
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Use(AgentIDMiddleware)
 

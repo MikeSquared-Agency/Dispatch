@@ -314,5 +314,6 @@ type Store interface {
 	// Median tokens for scoring
 	GetMedianEstimatedTokens(ctx context.Context) (int64, error)
 
+	Ping(ctx context.Context) error
 	Close() error
 }
