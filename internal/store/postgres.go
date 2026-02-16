@@ -26,6 +26,10 @@ func NewPostgresStore(ctx context.Context, databaseURL string) (*PostgresStore, 
 	return &PostgresStore{pool: pool}, nil
 }
 
+func (s *PostgresStore) Ping(ctx context.Context) error {
+	return s.pool.Ping(ctx)
+}
+
 func (s *PostgresStore) Close() error {
 	s.pool.Close()
 	return nil

@@ -160,6 +160,7 @@ func (m *mockStore) BacklogDiscoveryComplete(_ context.Context, _ uuid.UUID, _ *
 }
 func (m *mockStore) GetMedianEstimatedTokens(_ context.Context) (int64, error) { return 0, nil }
 
+func (m *mockStore) Ping(_ context.Context) error { return nil }
 func (m *mockStore) Close() error { return nil }
 
 type mockHermes struct {
