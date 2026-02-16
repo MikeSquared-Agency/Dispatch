@@ -174,14 +174,30 @@ func (h *StagesHandler) SubmitEvidence(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Publish evidence event
+	// Publish evidence event with enriched payload for Slack gateway
 	if h.hermes != nil {
+		// Build all_criteria snapshot for the Block Kit message
+		allCriteria, _ := h.store.GetGateStatus(r.Context(), id, req.Stage)
+		var criteriaSnapshot []hermes.GateEvidenceCriterion
+		for _, c := range allCriteria {
+			criteriaSnapshot = append(criteriaSnapshot, hermes.GateEvidenceCriterion{
+				Name:        c.Criterion,
+				Evidence:    c.Evidence,
+				HasEvidence: c.Evidence != "",
+			})
+		}
 		_ = h.hermes.Publish(hermes.SubjectGateEvidence(id.String()), hermes.GateEvidenceEvent{
 			ItemID:      id.String(),
+			ItemTitle:   item.Title,
+			ModelTier:   item.ModelTier,
 			Stage:       req.Stage,
+			StageIndex:  item.StageIndex,
+			TotalStages: len(item.StageTemplate),
 			Criterion:   req.Criterion,
 			Evidence:    req.Evidence,
 			SubmittedBy: req.SubmittedBy,
+			AgentID:     req.SubmittedBy,
+			AllCriteria: criteriaSnapshot,
 		})
 	}
 

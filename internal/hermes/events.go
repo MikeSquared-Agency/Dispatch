@@ -126,11 +126,24 @@ type OverrideRecordedEvent struct {
 
 // GateEvidenceEvent carries evidence submission for a gate criterion.
 type GateEvidenceEvent struct {
-	ItemID      string `json:"item_id"`
-	Stage       string `json:"stage"`
-	Criterion   string `json:"criterion"`
-	Evidence    string `json:"evidence"`
-	SubmittedBy string `json:"submitted_by"`
+	ItemID        string                `json:"item_id"`
+	ItemTitle     string                `json:"item_title"`
+	ModelTier     string                `json:"model_tier"`
+	Stage         string                `json:"stage"`
+	StageIndex    int                   `json:"stage_index"`
+	TotalStages   int                   `json:"total_stages"`
+	Criterion     string                `json:"criterion"`
+	Evidence      string                `json:"evidence"`
+	SubmittedBy   string                `json:"submitted_by"`
+	AgentID       string                `json:"agent_id"`
+	AllCriteria   []GateEvidenceCriterion `json:"all_criteria"`
+}
+
+// GateEvidenceCriterion represents criterion status in an evidence event.
+type GateEvidenceCriterion struct {
+	Name        string `json:"name"`
+	Evidence    string `json:"evidence,omitempty"`
+	HasEvidence bool   `json:"has_evidence"`
 }
 
 // GateChangesRequestedEvent carries feedback requesting changes.
